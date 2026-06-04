@@ -1,0 +1,210 @@
+"""LangGraph orchestration: analyze -> plan -> write -> review -> assemble.
+
+The graph fans out analysis (per document) and writing (per section) using
+``asyncio.gather`` for parallelism, while keeping linear stages between them.
+A progress callback is invoked at every stage so the API can stream updates
+over WebSocket.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import Any
+
+from langgraph.graph import END, START, StateGraph
+
+from app.agents.analyzer import analyze_document
+from app.agents.planner import plan_document
+from app.agents.reviewer import review_document
+from app.agents.state import GraphState
+from app.agents.writer import write_section
+from app.services.latex import assemble_document, write_and_compile
+
+MAX_REVIEW_RETRIES = 2
+
+
+async def _emit(state: GraphState, event: dict[str, Any]) -> None:
+    cb = state.get("progress")
+    if cb is not None:
+        await cb(event)
+
+
+# --------------------------------------------------------------------------- #
+# Nodes                                                                         #
+# --------------------------------------------------------------------------- #
+async def analyze_node(state: GraphState) -> dict[str, Any]:
+    documents = state["documents"]
+    llm_config = state["llm_config"]
+    await _emit(state, {"stage": "analyzing", "message": "Analisi dei documenti", "progress": 5})
+
+    tasks = [analyze_document(doc, llm_config) for doc in documents]
+    analyses = await asyncio.gather(*tasks)
+
+    await _emit(
+        state,
+        {"stage": "analyzing", "message": f"Analizzati {len(analyses)} documenti", "progress": 25},
+    )
+    return {"analyses": list(analyses)}
+
+
+async def plan_node(state: GraphState) -> dict[str, Any]:
+    await _emit(state, {"stage": "planning", "message": "Pianificazione struttura", "progress": 30})
+
+    title, plan = await plan_document(
+        analyses=[dict(a) for a in state["analyses"]],
+        user_prompt=state.get("user_prompt", ""),
+        language=state.get("language", "italian"),
+        llm_config=state["llm_config"],
+    )
+
+    await _emit(
+        state,
+        {
+            "stage": "planning",
+            "message": f"Struttura: {len(plan)} sezioni",
+            "progress": 40,
+            "plan": [{"part_title": s["part_title"], "title": s["title"]} for s in plan],
+        },
+    )
+    return {"title": title, "plan": plan}
+
+
+async def write_node(state: GraphState) -> dict[str, Any]:
+    plan = state["plan"]
+    documents_by_name = {d["filename"]: d.get("full_text", "") for d in state["documents"]}
+    few_shot = state.get("few_shot", "")
+    language = state.get("language", "italian")
+    llm_config = state["llm_config"]
+
+    await _emit(state, {"stage": "writing", "message": "Scrittura sezioni", "progress": 45})
+
+    total = len(plan)
+    done = 0
+    lock = asyncio.Lock()
+
+    async def _write(section: Any) -> Any:
+        nonlocal done
+        result = await write_section(
+            section, documents_by_name, few_shot, language, llm_config
+        )
+        async with lock:
+            done += 1
+            prog = 45 + int(35 * done / max(1, total))
+            await _emit(
+                state,
+                {
+                    "stage": "writing",
+                    "message": f"Scritta sezione: {section['title']}",
+                    "progress": prog,
+                    "completed": done,
+                    "total": total,
+                },
+            )
+        return result
+
+    sections = await asyncio.gather(*[_write(s) for s in plan])
+    sections = sorted(sections, key=lambda s: s["order_index"])
+    return {"sections": list(sections)}
+
+
+def _build_body(state: GraphState) -> list[str]:
+    parts: list[str] = []
+    current_part: str | None = None
+    for s in state["sections"]:
+        part_title = s.get("part_title")
+        if part_title and part_title != current_part:
+            parts.append(f"\\chapter{{{part_title}}}")
+            current_part = part_title
+        parts.append(s["latex"])
+    return parts
+
+
+async def review_node(state: GraphState) -> dict[str, Any]:
+    await _emit(state, {"stage": "reviewing", "message": "Revisione e compilazione", "progress": 82})
+
+    title = state.get("title", "Documento Generato")
+    language = state.get("language", "italian")
+    body_parts = _build_body(state)
+
+    latex = assemble_document(title=title, body_parts=body_parts, language=language)
+
+    work_dir = Path(state.get("work_dir", "storage/output/_tmp"))  # type: ignore[arg-type]
+    figures_src = state.get("figures_dir")
+    figures_path = Path(figures_src) if figures_src else None
+
+    compile_log = ""
+    for attempt in range(MAX_REVIEW_RETRIES + 1):
+        result = write_and_compile(
+            latex, work_dir, figures_src=figures_path, job_name="main"
+        )
+        if result.success:
+            await _emit(
+                state,
+                {"stage": "reviewing", "message": "Compilazione riuscita", "progress": 95},
+            )
+            return {"final_latex": latex, "pdf_path": result.pdf_path}
+
+        compile_log = result.log
+        if attempt < MAX_REVIEW_RETRIES:
+            await _emit(
+                state,
+                {
+                    "stage": "reviewing",
+                    "message": f"Correzione errori (tentativo {attempt + 1})",
+                    "progress": 85 + attempt * 3,
+                },
+            )
+            latex = await review_document(latex, state["llm_config"], compile_log)
+
+    # Failed to compile after retries: still return the latex for inspection.
+    await _emit(
+        state,
+        {"stage": "reviewing", "message": "Compilazione non riuscita", "progress": 95},
+    )
+    return {"final_latex": latex, "pdf_path": None, "compile_log": compile_log}
+
+
+# --------------------------------------------------------------------------- #
+# Graph builder                                                                 #
+# --------------------------------------------------------------------------- #
+def build_graph():
+    graph = StateGraph(GraphState)
+    graph.add_node("analyze", analyze_node)
+    graph.add_node("plan", plan_node)
+    graph.add_node("write", write_node)
+    graph.add_node("review", review_node)
+
+    graph.add_edge(START, "analyze")
+    graph.add_edge("analyze", "plan")
+    graph.add_edge("plan", "write")
+    graph.add_edge("write", "review")
+    graph.add_edge("review", END)
+
+    return graph.compile()
+
+
+async def run_pipeline(
+    documents: list[dict[str, Any]],
+    user_prompt: str,
+    language: str,
+    llm_config: dict[str, Any],
+    few_shot: str,
+    work_dir: Path,
+    figures_dir: Path | None,
+    progress=None,
+) -> dict[str, Any]:
+    """Run the full pipeline and return the final state."""
+    app = build_graph()
+    initial: dict[str, Any] = {
+        "documents": documents,
+        "user_prompt": user_prompt,
+        "language": language,
+        "llm_config": llm_config,
+        "few_shot": few_shot,
+        "work_dir": str(work_dir),
+        "figures_dir": str(figures_dir) if figures_dir else None,
+        "progress": progress,
+    }
+    final = await app.ainvoke(initial)
+    return final

@@ -1,5 +1,39 @@
+# --- Python / backend ---
 .venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.env
+backend/storage/
+backend/.venv/
+
+# --- Node / frontend ---
+node_modules/
+frontend/dist/
+frontend/node_modules/
+bun.lockb
+
+# --- LaTeX artifacts ---
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# --- Project data / build output ---
 data/
 figures/
 build/
 latex/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db

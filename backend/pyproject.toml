@@ -1,0 +1,43 @@
+[project]
+name = "pdf2latex-backend"
+version = "0.1.0"
+description = "Agentic backend that turns N PDFs into a comprehensive LaTeX document"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-multipart>=0.0.9",
+    "websockets>=12.0",
+    "sqlalchemy>=2.0",
+    "aiosqlite>=0.20",
+    "cryptography>=42.0",
+    "pymupdf>=1.24",
+    "pillow>=10.3",
+    "langchain>=0.3",
+    "langchain-core>=0.3",
+    "langgraph>=0.2",
+    "langchain-openai>=0.2",
+    "langchain-anthropic>=0.2",
+    "langchain-ollama>=0.2",
+]
+
+[project.optional-dependencies]
+# Heavier / optional document-understanding backends. Install on demand:
+#   uv sync --extra ocr   /   --extra docling   /   --extra markitdown
+ocr = ["pytesseract>=0.3.10"]
+docling = ["docling>=2.0"]
+markitdown = ["markitdown>=0.0.1a2"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -1,0 +1,120 @@
+"""SQLAlchemy ORM models for the PDF -> LaTeX generator."""
+
+import enum
+from datetime import datetime
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+)
+from sqlalchemy import Enum as SAEnum
+from sqlalchemy import (
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
+from sqlalchemy.orm import DeclarativeBase, relationship
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class ProjectStatus(str, enum.Enum):
+    uploaded = "uploaded"
+    analyzing = "analyzing"
+    planning = "planning"
+    writing = "writing"
+    reviewing = "reviewing"
+    compiling = "compiling"
+    completed = "completed"
+    failed = "failed"
+
+
+class SectionStatus(str, enum.Enum):
+    pending = "pending"
+    writing = "writing"
+    reviewing = "reviewing"
+    completed = "completed"
+    failed = "failed"
+
+
+class Project(Base):
+    """A generation job: a set of PDFs turned into one LaTeX document."""
+
+    __tablename__ = "projects"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False)
+    user_prompt = Column(Text, nullable=True)
+    language = Column(String(50), nullable=False, default="italian")
+    status = Column(SAEnum(ProjectStatus), default=ProjectStatus.uploaded)
+
+    output_tex_path = Column(String(512), nullable=True)
+    output_pdf_path = Column(String(512), nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    total_sources = Column(Integer, default=0)
+    total_sections = Column(Integer, default=0)
+    completed_sections = Column(Integer, default=0)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    sources = relationship(
+        "Source", back_populates="project", cascade="all, delete-orphan"
+    )
+    sections = relationship(
+        "Section", back_populates="project", cascade="all, delete-orphan"
+    )
+
+
+class Source(Base):
+    """An uploaded PDF belonging to a project."""
+
+    __tablename__ = "sources"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    filename = Column(String(255), nullable=False)
+    path = Column(String(512), nullable=False)
+    n_pages = Column(Integer, default=0)
+    order_index = Column(Integer, default=0)
+
+    project = relationship("Project", back_populates="sources")
+
+
+class Section(Base):
+    """A planned section of the output document, with its generated LaTeX."""
+
+    __tablename__ = "sections"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    part_title = Column(String(255), nullable=True)
+    title = Column(String(255), nullable=False)
+    order_index = Column(Integer, default=0)
+    outline = Column(JSON, nullable=True)
+    latex = Column(Text, nullable=True)
+    status = Column(SAEnum(SectionStatus), default=SectionStatus.pending)
+
+    project = relationship("Project", back_populates="sections")
+
+
+class ProviderConfig(Base):
+    """A configured LLM provider. API keys are stored encrypted."""
+
+    __tablename__ = "provider_configs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, unique=True)
+    provider_type = Column(String(50), nullable=False)  # openai|anthropic|ollama|custom|fake
+    api_key_encrypted = Column(Text, nullable=True)
+    base_url = Column(String(512), nullable=True)
+    default_model = Column(String(100), nullable=True)
+    params = Column(JSON, nullable=True)  # temperature, max_tokens, top_p, etc.
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)

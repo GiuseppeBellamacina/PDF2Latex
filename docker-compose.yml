@@ -1,0 +1,20 @@
+services:
+  backend:
+    build: ./backend
+    environment:
+      PDF2TEX_ENCRYPTION_KEY: ${PDF2TEX_ENCRYPTION_KEY:-change-me-please}
+      PDF2TEX_PDFLATEX_BIN: pdflatex
+    volumes:
+      - storage:/app/storage
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
+volumes:
+  storage:
