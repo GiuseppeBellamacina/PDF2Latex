@@ -15,6 +15,7 @@ async def plan_document(
     user_prompt: str,
     language: str,
     llm_config: dict[str, Any],
+    structure_hint: str = "",
 ) -> tuple[str, list[PlannedSection]]:
     """Produce a document title and an ordered list of planned sections."""
     analyses_json = json.dumps(analyses, ensure_ascii=False, indent=2)
@@ -23,9 +24,16 @@ async def plan_document(
         if user_prompt
         else ""
     )
+    structure_part = (
+        f"\n\nIndicazioni su struttura/indice/ordine (da rispettare):\n{structure_hint}"
+        if structure_hint
+        else ""
+    )
     user = (
         f"Lingua del documento: {language}\n\n"
-        f"Analisi dei documenti sorgente:\n{analyses_json}"
+        f"Analisi dei documenti sorgente (nell'ordine di elaborazione scelto):\n"
+        f"{analyses_json}"
+        f"{structure_part}"
         f"{prompt_part}"
     )
 

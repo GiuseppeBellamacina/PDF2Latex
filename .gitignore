@@ -28,11 +28,8 @@ bun.lockb
 *.fdb_latexmk
 *.synctex.gz
 
-# --- Project data / build output ---
+# --- Project data ---
 data/
-figures/
-build/
-latex/
 
 # --- OS / editor ---
 .DS_Store

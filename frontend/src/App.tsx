@@ -1,5 +1,6 @@
 import { Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
+import ConfigurePage from "./pages/ConfigurePage";
 import GeneratePage from "./pages/GeneratePage";
 import HistoryPage from "./pages/HistoryPage";
 import PreviewPage from "./pages/PreviewPage";
@@ -11,6 +12,7 @@ export default function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route path="/" element={<UploadPage />} />
+        <Route path="/configure/:projectId" element={<ConfigurePage />} />
         <Route path="/generate/:projectId" element={<GeneratePage />} />
         <Route path="/preview/:projectId" element={<PreviewPage />} />
         <Route path="/history" element={<HistoryPage />} />

@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
 )
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy import (
@@ -53,6 +54,19 @@ class Project(Base):
     language = Column(String(50), nullable=False, default="italian")
     status = Column(SAEnum(ProjectStatus), default=ProjectStatus.uploaded)
 
+    # Title-page / front-matter metadata
+    author = Column(String(255), nullable=True)
+    subtitle = Column(String(512), nullable=True)
+    abstract = Column(Text, nullable=True)
+    cover_date = Column(String(100), nullable=True)
+
+    # Structure / index guidance for the planner
+    structure_hint = Column(Text, nullable=True)
+
+    # Extraction configuration
+    extractor_backend = Column(String(50), nullable=True)  # pymupdf|docling|markitdown
+    enable_ocr = Column(Boolean, default=False)
+
     output_tex_path = Column(String(512), nullable=True)
     output_pdf_path = Column(String(512), nullable=True)
     error_message = Column(Text, nullable=True)
@@ -70,6 +84,9 @@ class Project(Base):
     sections = relationship(
         "Section", back_populates="project", cascade="all, delete-orphan"
     )
+    figures = relationship(
+        "Figure", back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class Source(Base):
@@ -85,6 +102,27 @@ class Source(Base):
     order_index = Column(Integer, default=0)
 
     project = relationship("Project", back_populates="sources")
+
+
+class Figure(Base):
+    """An embedded figure extracted from a source PDF."""
+
+    __tablename__ = "figures"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    source_id = Column(Integer, ForeignKey("sources.id"), nullable=True)
+    source_filename = Column(String(255), nullable=True)
+    rel_path = Column(String(512), nullable=False)  # e.g. "figures/fig_xxx.png"
+    page = Column(Integer, default=0)
+    mandatory = Column(Boolean, default=False)
+    order_index = Column(Integer, default=0)
+    # OCR-derived caption + heuristic "worth including" recommendation.
+    caption = Column(Text, nullable=True)
+    score = Column(Float, default=0.0)
+    suggested = Column(Boolean, default=False)
+
+    project = relationship("Project", back_populates="figures")
 
 
 class Section(Base):

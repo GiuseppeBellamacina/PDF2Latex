@@ -46,6 +46,9 @@ def main() -> None:
         host=settings.host,
         port=settings.port,
         reload=settings.debug,
+        # Only watch our source; otherwise the reloader scans .venv and
+        # restarts the server mid-request when packages touch files.
+        reload_dirs=["app"] if settings.debug else None,
     )
 
 

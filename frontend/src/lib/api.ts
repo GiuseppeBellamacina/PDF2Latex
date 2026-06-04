@@ -28,6 +28,18 @@ export interface Source {
   order_index: number;
 }
 
+export interface Figure {
+  id: number;
+  source_filename: string | null;
+  rel_path: string;
+  page: number;
+  mandatory: boolean;
+  order_index: number;
+  caption: string | null;
+  score: number | null;
+  suggested: boolean | null;
+}
+
 export interface Section {
   id: number;
   part_title: string | null;
@@ -43,6 +55,13 @@ export interface Project {
   user_prompt: string | null;
   language: string;
   status: string;
+  author: string | null;
+  subtitle: string | null;
+  abstract: string | null;
+  cover_date: string | null;
+  structure_hint: string | null;
+  extractor_backend: string | null;
+  enable_ocr: boolean | null;
   output_tex_path: string | null;
   output_pdf_path: string | null;
   error_message: string | null;
@@ -52,6 +71,29 @@ export interface Project {
   created_at: string;
   sources: Source[];
   sections: Section[];
+  figures: Figure[];
+}
+
+export interface ProjectUpdate {
+  name?: string;
+  user_prompt?: string;
+  language?: string;
+  author?: string;
+  subtitle?: string;
+  abstract?: string;
+  cover_date?: string;
+  structure_hint?: string;
+  extractor_backend?: string;
+  enable_ocr?: boolean;
+  source_order?: number[];
+  mandatory_figure_ids?: number[];
+}
+
+export interface Backends {
+  hybrid: boolean;
+  pymupdf: boolean;
+  docling: boolean;
+  ocr: boolean;
 }
 
 export interface ProjectSummary {
@@ -109,13 +151,24 @@ export const api = {
   // Projects
   listProjects: () => req<ProjectSummary[]>("/projects"),
   getProject: (id: number) => req<Project>(`/projects/${id}`),
+  updateProject: (id: number, data: ProjectUpdate) =>
+    req<Project>(`/projects/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }),
   deleteProject: (id: number) =>
     req<{ ok: boolean }>(`/projects/${id}`, { method: "DELETE" }),
   createProject: (form: FormData) =>
     req<Project>("/projects", { method: "POST", body: form }),
   previewLatex: (id: number) =>
     req<{ latex: string }>(`/projects/${id}/preview`),
+  backends: () => req<Backends>("/backends"),
 
+  figureUrl: (projectId: number, relPath: string) => {
+    const file = relPath.split("/").pop() ?? relPath;
+    return `${BASE}/projects/${projectId}/figures/${file}`;
+  },
   downloadUrl: (id: number, kind: "tex" | "pdf") =>
     `${BASE}/projects/${id}/download/${kind}`,
 };

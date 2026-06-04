@@ -28,9 +28,13 @@ class Settings(BaseSettings):
     latex_compile_passes: int = 2
 
     # PDF extraction
-    extractor_backend: str = "pymupdf"  # pymupdf | docling | markitdown
+    extractor_backend: str = "hybrid"  # hybrid | pymupdf | docling
     enable_ocr: bool = False
     render_dpi: int = 130
+    # Docling renders every page through ML layout models; on large PDFs this
+    # exhausts memory (std::bad_alloc). Above this page count the hybrid
+    # backend skips Docling and uses PyMuPDF only.
+    docling_max_pages: int = 50
 
     # Defaults
     default_language: str = "italian"

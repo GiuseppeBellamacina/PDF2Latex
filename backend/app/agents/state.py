@@ -35,8 +35,10 @@ class GraphState(TypedDict, total=False):
     # Inputs
     user_prompt: str
     language: str
-    documents: list[dict[str, Any]]  # serialized ExtractedDocument {filename, full_text, images}
+    documents: list[dict[str, Any]]  # serialized ExtractedDocument {filename, full_text, figures}
     few_shot: str
+    metadata: dict[str, Any]  # title/author/subtitle/abstract/cover_date
+    structure_hint: str
 
     # LLM config (serialized LLMConfig dict)
     llm_config: dict[str, Any]

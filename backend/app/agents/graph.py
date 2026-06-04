@@ -56,7 +56,13 @@ async def plan_node(state: GraphState) -> dict[str, Any]:
         user_prompt=state.get("user_prompt", ""),
         language=state.get("language", "italian"),
         llm_config=state["llm_config"],
+        structure_hint=state.get("structure_hint", ""),
     )
+
+    # Prefer the user-provided document title if present.
+    meta_title = (state.get("metadata") or {}).get("title")
+    if meta_title:
+        title = meta_title
 
     await _emit(
         state,
@@ -73,6 +79,10 @@ async def plan_node(state: GraphState) -> dict[str, Any]:
 async def write_node(state: GraphState) -> dict[str, Any]:
     plan = state["plan"]
     documents_by_name = {d["filename"]: d.get("full_text", "") for d in state["documents"]}
+    figures_by_name = {d["filename"]: d.get("figures", []) for d in state["documents"]}
+    mandatory_by_name = {
+        d["filename"]: d.get("mandatory_figures", []) for d in state["documents"]
+    }
     few_shot = state.get("few_shot", "")
     language = state.get("language", "italian")
     llm_config = state["llm_config"]
@@ -86,7 +96,13 @@ async def write_node(state: GraphState) -> dict[str, Any]:
     async def _write(section: Any) -> Any:
         nonlocal done
         result = await write_section(
-            section, documents_by_name, few_shot, language, llm_config
+            section,
+            documents_by_name,
+            figures_by_name,
+            mandatory_by_name,
+            few_shot,
+            language,
+            llm_config,
         )
         async with lock:
             done += 1
@@ -120,14 +136,51 @@ def _build_body(state: GraphState) -> list[str]:
     return parts
 
 
+def _ensure_mandatory_figures(state: GraphState, body_parts: list[str]) -> list[str]:
+    """Append any mandatory figure not already referenced in the body."""
+    mandatory: list[str] = []
+    for d in state["documents"]:
+        mandatory.extend(d.get("mandatory_figures", []))
+    if not mandatory:
+        return body_parts
+
+    body_text = "\n".join(body_parts)
+    missing = [p for p in dict.fromkeys(mandatory) if p not in body_text]
+    if not missing:
+        return body_parts
+
+    blocks = ["\\chapter{Figure}"]
+    for rel in missing:
+        blocks.append(
+            "\\begin{figure}[H]\\centering\n"
+            f"\\includegraphics[width=0.8\\linewidth]{{{rel}}}\n"
+            "\\caption{Figura tratta dal materiale sorgente.}\n"
+            "\\end{figure}"
+        )
+    return body_parts + ["\n".join(blocks)]
+
+
 async def review_node(state: GraphState) -> dict[str, Any]:
     await _emit(state, {"stage": "reviewing", "message": "Revisione e compilazione", "progress": 82})
 
     title = state.get("title", "Documento Generato")
     language = state.get("language", "italian")
+    metadata = state.get("metadata") or {}
     body_parts = _build_body(state)
 
-    latex = assemble_document(title=title, body_parts=body_parts, language=language)
+    # Safety net: ensure every mandatory figure ends up in the document. Any
+    # mandatory figure not already referenced is appended in a dedicated section.
+    body_parts = _ensure_mandatory_figures(state, body_parts)
+
+    latex = assemble_document(
+        title=title,
+        body_parts=body_parts,
+        language=language,
+        author=metadata.get("author") or "PDF2LaTeX",
+        subtitle=metadata.get("subtitle") or "",
+        abstract=metadata.get("abstract") or "",
+        cover_date=metadata.get("cover_date") or "",
+    )
 
     work_dir = Path(state.get("work_dir", "storage/output/_tmp"))  # type: ignore[arg-type]
     figures_src = state.get("figures_dir")
@@ -192,6 +245,8 @@ async def run_pipeline(
     few_shot: str,
     work_dir: Path,
     figures_dir: Path | None,
+    metadata: dict[str, Any] | None = None,
+    structure_hint: str = "",
     progress=None,
 ) -> dict[str, Any]:
     """Run the full pipeline and return the final state."""
@@ -204,6 +259,8 @@ async def run_pipeline(
         "few_shot": few_shot,
         "work_dir": str(work_dir),
         "figures_dir": str(figures_dir) if figures_dir else None,
+        "metadata": metadata or {},
+        "structure_hint": structure_hint,
         "progress": progress,
     }
     final = await app.ainvoke(initial)

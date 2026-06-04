@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -24,13 +25,28 @@ PREAMBLE = r"""\documentclass[11pt,a4paper]{report}
 
 \newcommand{\inbreve}[1]{\breve{#1}}
 
-\title{%(title)s}
-\author{%(author)s}
-\date{\today}
-
 \begin{document}
-\maketitle
-\tableofcontents
+"""
+
+TITLE_PAGE = r"""\begin{titlepage}
+\centering
+\vspace*{3cm}
+{\Huge\bfseries %(title)s\par}
+%(subtitle_block)s
+\vspace{1.5cm}
+{\Large %(author)s\par}
+\vspace{0.5cm}
+{\large %(date)s\par}
+\vfill
+\end{titlepage}
+"""
+
+ABSTRACT_BLOCK = r"""\begin{abstract}
+%(abstract)s
+\end{abstract}
+"""
+
+FRONT_MATTER_TAIL = r"""\tableofcontents
 \clearpage
 """
 
@@ -51,16 +67,103 @@ def assemble_document(
     body_parts: list[str],
     language: str = "italian",
     author: str = "PDF2LaTeX",
+    subtitle: str = "",
+    abstract: str = "",
+    cover_date: str = "",
 ) -> str:
-    """Join the preamble, generated body parts and postamble into one .tex string."""
+    """Join the preamble, title page, optional abstract, body and postamble."""
     babel_lang = "italian" if language.lower().startswith("ital") else language.lower()
-    preamble = PREAMBLE % {
-        "language": babel_lang,
+    preamble = PREAMBLE % {"language": babel_lang}
+
+    subtitle_block = ""
+    if subtitle:
+        subtitle_block = (
+            "\\vspace{0.6cm}\n{\\Large\\itshape " + _escape(subtitle) + "\\par}"
+        )
+    title_page = TITLE_PAGE % {
         "title": _escape(title),
+        "subtitle_block": subtitle_block,
         "author": _escape(author),
+        "date": _escape(cover_date) if cover_date else r"\today",
     }
+
+    abstract_block = ""
+    if abstract:
+        abstract_block = ABSTRACT_BLOCK % {"abstract": _escape(abstract)}
+
     body = "\n\n".join(body_parts)
-    return preamble + "\n" + body + "\n" + POSTAMBLE
+    return (
+        preamble
+        + title_page
+        + abstract_block
+        + FRONT_MATTER_TAIL
+        + "\n"
+        + body
+        + "\n"
+        + POSTAMBLE
+    )
+
+
+_INCLUDE_RE = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}")
+_FIGURE_ENV_RE = re.compile(r"\\begin\{figure\}.*?\\end\{figure\}", re.DOTALL)
+
+
+def _available_figures(figures_dir: Path) -> dict[str, str]:
+    """Map every available figure (by basename, case-folded) to ``figures/<name>``."""
+    out: dict[str, str] = {}
+    if figures_dir.exists():
+        for p in figures_dir.iterdir():
+            if p.is_file():
+                out[p.name.lower()] = f"figures/{p.name}"
+    return out
+
+
+def sanitize_figures(tex: str, figures_dir: Path) -> tuple[str, list[str]]:
+    """Fix or remove figure references that do not resolve to a real file.
+
+    For each ``\\includegraphics`` the basename is looked up among the files
+    actually present in ``figures_dir``. If found, the path is normalised to
+    ``figures/<name>`` (fixing wrong folders/paths). If not found, the
+    enclosing ``figure`` environment (or the bare command) is removed so a
+    missing image cannot abort the whole compilation. Returns the cleaned
+    LaTeX and the list of dropped basenames.
+    """
+    available = _available_figures(figures_dir)
+    dropped: list[str] = []
+
+    def resolve(path: str) -> str | None:
+        return available.get(Path(path.strip()).name.lower())
+
+    def handle_env(match: re.Match) -> str:
+        block = match.group(0)
+        includes = _INCLUDE_RE.findall(block)
+        if not includes:
+            return block
+        new_block = block
+        for inc in includes:
+            fixed = resolve(inc)
+            if fixed is None:
+                dropped.append(Path(inc).name)
+                return ""  # drop the entire figure environment
+            if fixed != inc:
+                new_block = new_block.replace("{" + inc + "}", "{" + fixed + "}")
+        return new_block
+
+    tex = _FIGURE_ENV_RE.sub(handle_env, tex)
+
+    # Stray \includegraphics not wrapped in a figure environment.
+    def handle_inc(match: re.Match) -> str:
+        inc = match.group(1)
+        fixed = resolve(inc)
+        if fixed is None:
+            dropped.append(Path(inc).name)
+            return ""
+        if fixed != inc:
+            return match.group(0).replace("{" + inc + "}", "{" + fixed + "}")
+        return match.group(0)
+
+    tex = _INCLUDE_RE.sub(handle_inc, tex)
+    return tex, dropped
 
 
 def write_and_compile(
@@ -72,14 +175,23 @@ def write_and_compile(
     """Write ``tex_content`` into ``work_dir`` and compile it with pdflatex."""
     work_dir.mkdir(parents=True, exist_ok=True)
     tex_path = work_dir / f"{job_name}.tex"
-    tex_path.write_text(tex_content, encoding="utf-8")
 
     if figures_src and figures_src.exists():
         dest = work_dir / "figures"
         if dest.resolve() != figures_src.resolve():
             shutil.copytree(figures_src, dest, dirs_exist_ok=True)
 
+    # Drop/fix references to figures that do not exist so a single hallucinated
+    # \includegraphics cannot abort the whole compilation.
+    tex_content, dropped = sanitize_figures(tex_content, work_dir / "figures")
+    tex_path.write_text(tex_content, encoding="utf-8")
+
     log_acc: list[str] = []
+    if dropped:
+        log_acc.append(
+            f"[sanitize] Rimosse {len(dropped)} figure inesistenti: "
+            + ", ".join(sorted(set(dropped))[:20])
+        )
     pdf_path = work_dir / f"{job_name}.pdf"
     passes = max(1, settings.latex_compile_passes)
     for _ in range(passes):

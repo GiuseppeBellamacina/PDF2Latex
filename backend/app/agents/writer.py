@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from app.agents.prompts import WRITER_SYSTEM
@@ -11,11 +12,100 @@ from app.agents.utils import call_llm, strip_latex_fences
 
 MAX_SOURCE_CHARS = 12000
 MAX_FEWSHOT_CHARS = 6000
+MAX_FIGURES_PER_SECTION = 6
+
+
+def _fig_id(rel_path: str) -> str:
+    """Stable figure identifier = file basename without extension."""
+    return Path(rel_path).stem
+
+
+def _figure_block(rel_path: str, caption: str) -> str:
+    cap = caption.strip() or "Figura tratta dal materiale sorgente."
+    return (
+        "\\begin{figure}[H]\\centering\n"
+        f"\\includegraphics[width=0.8\\linewidth]{{{rel_path}}}\n"
+        f"\\caption{{{cap}}}\n"
+        "\\end{figure}"
+    )
+
+
+def _read_brace_arg(s: str, i: int) -> tuple[str, int]:
+    """Read a ``{...}`` argument starting at ``s[i] == '{'`` with brace matching.
+
+    Returns the inner content and the index just past the closing brace.
+    """
+    assert s[i] == "{"
+    depth = 0
+    start = i + 1
+    j = i
+    while j < len(s):
+        c = s[j]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start:j], j + 1
+        j += 1
+    return s[start:], len(s)  # unbalanced; take the rest
+
+
+def expand_figrefs(
+    latex: str,
+    id_to_path: dict[str, str],
+    mandatory_ids: list[str],
+) -> str:
+    """Deterministically turn ``\\figref{ID}{caption}`` into real figure blocks.
+
+    IDs are resolved against the real extracted figures; unknown IDs are simply
+    dropped (no hallucinated path can reach the document). Every mandatory
+    figure is guaranteed: any not referenced by the model is appended at the
+    end of the section.
+    """
+    out: list[str] = []
+    used: set[str] = set()
+    token = "\\figref"
+    i = 0
+    n = len(latex)
+    while i < n:
+        idx = latex.find(token, i)
+        if idx == -1:
+            out.append(latex[i:])
+            break
+        out.append(latex[i:idx])
+        j = idx + len(token)
+        while j < n and latex[j] in " \t":
+            j += 1
+        if j < n and latex[j] == "{":
+            fid, j = _read_brace_arg(latex, j)
+            caption = ""
+            if j < n and latex[j] == "{":
+                caption, j = _read_brace_arg(latex, j)
+            path = id_to_path.get(fid.strip())
+            if path:
+                used.add(fid.strip())
+                out.append(_figure_block(path, caption))
+            # Unknown ID -> drop silently.
+            i = j
+        else:
+            # Malformed \figref with no argument -> drop the token.
+            i = j
+
+    result = "".join(out)
+
+    missing = [m for m in dict.fromkeys(mandatory_ids) if m not in used and m in id_to_path]
+    if missing:
+        blocks = [_figure_block(id_to_path[m], "") for m in missing]
+        result = result.rstrip() + "\n\n" + "\n\n".join(blocks) + "\n"
+    return result
 
 
 async def write_section(
     section: PlannedSection,
     documents_by_name: dict[str, str],
+    figures_by_name: dict[str, list[str]],
+    mandatory_by_name: dict[str, list[str]],
     few_shot: str,
     language: str,
     llm_config: dict[str, Any],
@@ -24,10 +114,22 @@ async def write_section(
     outline_json = json.dumps(section["outline"], ensure_ascii=False, indent=2)
 
     source_text = ""
+    figures: list[str] = []
+    mandatory: list[str] = []
     for fname in section["source_filenames"]:
         chunk = documents_by_name.get(fname, "")
         if chunk:
             source_text += f"\n--- {fname} ---\n{chunk[:MAX_SOURCE_CHARS]}\n"
+        figures.extend(figures_by_name.get(fname, []))
+        mandatory.extend(mandatory_by_name.get(fname, []))
+
+    # Deterministic figure registry: ID -> real relative path.
+    id_to_path: dict[str, str] = {}
+    for rel in figures:
+        id_to_path.setdefault(_fig_id(rel), rel)
+    for rel in mandatory:
+        id_to_path.setdefault(_fig_id(rel), rel)
+    mandatory_ids = [_fig_id(rel) for rel in dict.fromkeys(mandatory)]
 
     fewshot_part = (
         f"\n\nEsempio di stile LaTeX desiderato:\n{few_shot[:MAX_FEWSHOT_CHARS]}"
@@ -35,17 +137,37 @@ async def write_section(
         else ""
     )
 
+    figures_part = ""
+    optional_ids = [
+        fid for fid in (_fig_id(f) for f in figures) if fid not in set(mandatory_ids)
+    ]
+    optional_ids = list(dict.fromkeys(optional_ids))[:MAX_FIGURES_PER_SECTION]
+    if mandatory_ids:
+        listed = "\n".join(f"- {fid}" for fid in mandatory_ids)
+        figures_part += (
+            "\n\nFigure OBBLIGATORIE: inseriscile TUTTE con \\figref{ID}{didascalia} "
+            "(una per riga), scegliendo una didascalia pertinente:\n" + listed
+        )
+    if optional_ids:
+        listed = "\n".join(f"- {fid}" for fid in optional_ids)
+        figures_part += (
+            "\n\nFigure disponibili (facoltative, usa \\figref{ID}{didascalia} solo se "
+            "pertinenti):\n" + listed
+        )
+
     user = (
         f"Lingua: {language}\n"
         f"Parte: {section['part_title']}\n"
         f"Titolo sezione: {section['title']}\n\n"
         f"Outline:\n{outline_json}\n\n"
         f"Materiale sorgente:\n{source_text}"
+        f"{figures_part}"
         f"{fewshot_part}"
     )
 
     raw = await call_llm(llm_config, WRITER_SYSTEM, user)
     latex = strip_latex_fences(raw)
+    latex = expand_figrefs(latex, id_to_path, mandatory_ids)
 
     return WrittenSection(
         title=section["title"],

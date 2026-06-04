@@ -27,6 +27,9 @@ omnicomprensivo in italiano, che integri in modo intelligente i contenuti di tut
 documenti, evitando ripetizioni e seguendo un ordine didattico coerente.
 
 Tieni conto della richiesta dell'utente se presente (taglio, lunghezza, focus, ordine).
+Se ti vengono fornite indicazioni esplicite su struttura/indice/ordine, RISPETTALE: usa \
+quei titoli di parti/sezioni e quell'ordine. In assenza di indicazioni, segui l'ordine di \
+elaborazione dei documenti come riferimento.
 
 Rispondi ESCLUSIVAMENTE con un oggetto JSON valido:
 {
@@ -53,8 +56,12 @@ Regole:
 - NON includere \\documentclass, preamboli, \\begin{document} o \\end{document}.
 - Usa ambienti matematici (equation, align) per le formule.
 - Spiega i concetti in modo chiaro, rigoroso e discorsivo, non a elenco puntato secco.
-- Se citi una figura presente nel materiale, descrivila a parole (non inserire \
-\\includegraphics a meno che il percorso non sia esplicitamente fornito).
+- Per inserire una figura NON usare mai \\includegraphics o l'ambiente figure e NON \
+scrivere percorsi di file. Usa ESCLUSIVAMENTE il comando:
+  \\figref{ID}{Didascalia descrittiva}
+  dove ID \u00e8 uno degli identificatori elencati nel materiale (campo "Figure \
+disponibili"). Inserisci il comando su una riga a s\u00e9. Usa solo gli ID elencati: \
+qualunque ID non in elenco verr\u00e0 ignorato. Inserisci solo le figure pertinenti.
 - Mantieni coerenza terminologica in italiano.
 
 Restituisci esclusivamente il codice LaTeX della sezione."""

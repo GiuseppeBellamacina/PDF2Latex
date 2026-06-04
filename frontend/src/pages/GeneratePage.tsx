@@ -1,6 +1,6 @@
-import { Play, Square } from "lucide-react";
+import { Download, ExternalLink, FileCode, Play, Square } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import ProgressTimeline from "../components/ProgressTimeline";
 import { useGenerateWs } from "../hooks/useGenerateWs";
 import { api, type Project } from "../lib/api";
@@ -9,7 +9,6 @@ import { useAppStore } from "../stores/appStore";
 export default function GeneratePage() {
   const { projectId } = useParams();
   const id = Number(projectId);
-  const navigate = useNavigate();
 
   const { providers, selectedProviderId, loadProviders, setSelectedProvider } =
     useAppStore();
@@ -24,12 +23,16 @@ export default function GeneratePage() {
       .catch(() => {});
   }, [id, loadProviders]);
 
+  const completed = latest?.stage === "done" && !!latest.pdf;
+
   useEffect(() => {
-    if (latest?.stage === "done" && latest.pdf) {
-      const t = setTimeout(() => navigate(`/preview/${id}`), 1200);
-      return () => clearTimeout(t);
+    if (completed) {
+      api
+        .getProject(id)
+        .then(setProject)
+        .catch(() => {});
     }
-  }, [latest, id, navigate]);
+  }, [completed, id]);
 
   const provider = providers.find((p) => p.id === selectedProviderId);
 
@@ -81,6 +84,32 @@ export default function GeneratePage() {
       <div className="card">
         <ProgressTimeline events={events} latest={latest} />
       </div>
+
+      {completed && (
+        <div className="card space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+              Documento pronto
+            </h2>
+            <div className="flex gap-2">
+              <a className="btn-ghost" href={api.downloadUrl(id, "tex")}>
+                <FileCode size={16} /> .tex
+              </a>
+              <a className="btn-ghost" href={api.downloadUrl(id, "pdf")}>
+                <Download size={16} /> PDF
+              </a>
+              <Link className="btn-primary" to={`/preview/${id}`}>
+                <ExternalLink size={16} /> Anteprima
+              </Link>
+            </div>
+          </div>
+          <iframe
+            title="Anteprima PDF"
+            src={`${api.downloadUrl(id, "pdf")}#view=FitH`}
+            className="h-[70vh] w-full rounded-lg border border-ink-200 dark:border-ink-800"
+          />
+        </div>
+      )}
 
       {latest?.plan && latest.plan.length > 0 && (
         <div className="card">

@@ -1,3 +1,4 @@
+import { Check } from "lucide-react";
 import { type ProgressEvent } from "../hooks/useGenerateWs";
 import { cn } from "../lib/utils";
 
@@ -20,6 +21,7 @@ export default function ProgressTimeline({ events, latest }: Props) {
   const currentIdx = STAGES.findIndex((s) => s.key === currentStage);
   const progress = latest?.progress ?? 0;
   const failed = currentStage === "error";
+  const completed = currentStage === "done";
 
   return (
     <div className="space-y-5">
@@ -32,7 +34,11 @@ export default function ProgressTimeline({ events, latest }: Props) {
           <div
             className={cn(
               "h-full rounded-full transition-all duration-500",
-              failed ? "bg-red-500" : "bg-ink-900 dark:bg-ink-100",
+              failed
+                ? "bg-red-500"
+                : completed
+                  ? "bg-emerald-500"
+                  : "bg-ink-900 dark:bg-ink-100",
             )}
             style={{ width: `${progress}%` }}
           />
@@ -41,21 +47,27 @@ export default function ProgressTimeline({ events, latest }: Props) {
 
       <ol className="grid grid-cols-2 gap-2 sm:grid-cols-3">
         {STAGES.map((s, i) => {
-          const active = i === currentIdx;
-          const done = currentIdx > i || currentStage === "done";
+          const active = i === currentIdx && !completed;
+          const done = currentIdx > i || completed;
           return (
             <li
               key={s.key}
               className={cn(
-                "rounded-lg border px-3 py-2 text-xs transition-colors",
+                "flex items-center justify-between rounded-lg border px-3 py-2 text-xs transition-colors",
                 done
-                  ? "border-ink-300 bg-ink-100 text-ink-700 dark:border-ink-700 dark:bg-ink-900 dark:text-ink-300"
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
                   : active
                     ? "border-ink-500 text-ink-900 dark:text-ink-100"
                     : "border-ink-200 text-ink-400 dark:border-ink-800",
               )}
             >
-              {s.label}
+              <span>{s.label}</span>
+              {done && (
+                <Check
+                  size={14}
+                  className="text-emerald-600 dark:text-emerald-400"
+                />
+              )}
             </li>
           );
         })}

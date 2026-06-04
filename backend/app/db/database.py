@@ -14,9 +14,42 @@ async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit
 
 
 async def init_db() -> None:
-    """Create all tables."""
+    """Create all tables and apply lightweight in-place migrations."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_migrate_add_columns)
+
+
+# New columns added after the first schema version. SQLite can ADD COLUMN
+# cheaply, so for this single-user local app we patch existing tables in place.
+_MIGRATIONS: dict[str, dict[str, str]] = {
+    "projects": {
+        "author": "VARCHAR(255)",
+        "subtitle": "VARCHAR(512)",
+        "abstract": "TEXT",
+        "cover_date": "VARCHAR(100)",
+        "structure_hint": "TEXT",
+        "extractor_backend": "VARCHAR(50)",
+        "enable_ocr": "BOOLEAN DEFAULT 0",
+    },
+    "figures": {
+        "caption": "TEXT",
+        "score": "FLOAT DEFAULT 0",
+        "suggested": "BOOLEAN DEFAULT 0",
+    },
+}
+
+
+def _migrate_add_columns(sync_conn) -> None:  # noqa: ANN001 - sqlalchemy Connection
+    for table, columns in _MIGRATIONS.items():
+        existing = {
+            row[1] for row in sync_conn.exec_driver_sql(f"PRAGMA table_info({table})")
+        }
+        for col, ddl in columns.items():
+            if col not in existing:
+                sync_conn.exec_driver_sql(
+                    f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"
+                )
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

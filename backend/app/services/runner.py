@@ -11,7 +11,15 @@ from app.agents.graph import run_pipeline
 from app.core.config import settings
 from app.core.encryption import decrypt_api_key
 from app.db.database import async_session
-from app.db.models import Project, ProjectStatus, ProviderConfig, Section, SectionStatus, Source
+from app.db.models import (
+    Figure,
+    Project,
+    ProjectStatus,
+    ProviderConfig,
+    Section,
+    SectionStatus,
+    Source,
+)
 from app.services.extractor import get_extractor
 from app.services.progress import manager
 
@@ -46,6 +54,18 @@ async def run_generation(project_id: int, provider_id: int, model: str | None = 
             .scalars()
             .all()
         )
+        figures = (
+            (await session.execute(select(Figure).where(Figure.project_id == project_id)))
+            .scalars()
+            .all()
+        )
+        # Mandatory figures grouped by source filename.
+        mandatory_by_name: dict[str, list[str]] = {}
+        for fig in figures:
+            if fig.mandatory:
+                mandatory_by_name.setdefault(fig.source_filename or "", []).append(
+                    fig.rel_path
+                )
 
         llm_config = _build_llm_config(provider, model)
         few_shot = _load_few_shot()
@@ -54,6 +74,15 @@ async def run_generation(project_id: int, provider_id: int, model: str | None = 
         figures_dir = settings.uploads_dir / f"project_{project_id}" / "figures"
         work_dir = settings.output_dir / f"project_{project_id}"
         work_dir.mkdir(parents=True, exist_ok=True)
+
+        metadata = {
+            "title": project.name,
+            "author": project.author or "",
+            "subtitle": project.subtitle or "",
+            "abstract": project.abstract or "",
+            "cover_date": project.cover_date or "",
+        }
+        structure_hint = project.structure_hint or ""
 
         async def progress(event: dict[str, Any]) -> None:
             await manager.emit(project_id, event)
@@ -64,16 +93,21 @@ async def run_generation(project_id: int, provider_id: int, model: str | None = 
             await session.commit()
             await manager.emit(project_id, {"stage": "extracting", "message": "Estrazione PDF", "progress": 2})
 
-            extractor = get_extractor()
+            extractor = get_extractor(
+                project.extractor_backend, enable_ocr=bool(project.enable_ocr)
+            )
             documents: list[dict[str, Any]] = []
             for src in sorted(sources, key=lambda s: s.order_index):
                 doc = extractor.extract(Path(src.path), figures_dir)
                 src.n_pages = doc.n_pages
+                # Figures available for this source = extracted now + mandatory picks.
+                all_figs = list(dict.fromkeys(doc.figures + mandatory_by_name.get(src.filename, [])))
                 documents.append(
                     {
                         "filename": doc.filename,
                         "full_text": doc.full_text(),
-                        "images": [p.image_path for p in doc.pages],
+                        "figures": all_figs,
+                        "mandatory_figures": mandatory_by_name.get(src.filename, []),
                     }
                 )
             await session.commit()
@@ -87,6 +121,8 @@ async def run_generation(project_id: int, provider_id: int, model: str | None = 
                 few_shot=few_shot,
                 work_dir=work_dir,
                 figures_dir=figures_dir,
+                metadata=metadata,
+                structure_hint=structure_hint,
                 progress=progress,
             )
 

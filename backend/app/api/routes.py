@@ -13,6 +13,7 @@ from sqlalchemy.orm import selectinload
 from app.api.schemas import (
     ProjectOut,
     ProjectSummary,
+    ProjectUpdate,
     ProviderCreate,
     ProviderOut,
     ProviderTestRequest,
@@ -22,9 +23,16 @@ from app.core.config import settings
 from app.core.encryption import encrypt_api_key
 from app.core.llm_factory import LLMConfig, test_llm_connection
 from app.db.database import get_db
-from app.db.models import Project, ProjectStatus, ProviderConfig, Source
+from app.db.models import Figure, Project, ProjectStatus, ProviderConfig, Source
+from app.services.extractor import available_backends, extract_figures
 
 router = APIRouter()
+
+
+@router.get("/backends")
+async def list_backends():
+    """Report which extractor backends are installed/usable."""
+    return available_backends()
 
 
 # --------------------------- Providers ------------------------------------- #
@@ -109,6 +117,12 @@ async def create_project(
     name: str = Form(...),
     user_prompt: str = Form(""),
     language: str = Form("italian"),
+    author: str = Form(""),
+    subtitle: str = Form(""),
+    abstract: str = Form(""),
+    cover_date: str = Form(""),
+    structure_hint: str = Form(""),
+    extractor_backend: str = Form("hybrid"),
     files: list[UploadFile] = File(...),
     db: AsyncSession = Depends(get_db),
 ):
@@ -119,6 +133,12 @@ async def create_project(
         name=name,
         user_prompt=user_prompt or None,
         language=language,
+        author=author or None,
+        subtitle=subtitle or None,
+        abstract=abstract or None,
+        cover_date=cover_date or None,
+        structure_hint=structure_hint or None,
+        extractor_backend=extractor_backend or "hybrid",
         status=ProjectStatus.uploaded,
         total_sources=len(files),
     )
@@ -127,8 +147,10 @@ async def create_project(
     await db.refresh(project)
 
     dest_dir = settings.uploads_dir / f"project_{project.id}"
+    figures_dir = dest_dir / "figures"
     dest_dir.mkdir(parents=True, exist_ok=True)
 
+    fig_order = 0
     for idx, upload in enumerate(files):
         if not (upload.filename or "").lower().endswith(".pdf"):
             continue
@@ -136,16 +158,90 @@ async def create_project(
         target = dest_dir / safe_name
         content = await upload.read()
         target.write_bytes(content)
-        db.add(
-            Source(
-                project_id=project.id,
-                filename=safe_name,
-                path=str(target),
-                order_index=idx,
-            )
+        source = Source(
+            project_id=project.id,
+            filename=safe_name,
+            path=str(target),
+            order_index=idx,
         )
+        db.add(source)
+        await db.flush()  # get source.id
+
+        # Extract embedded figures so the user can pick mandatory ones.
+        try:
+            figs = extract_figures(target, figures_dir)
+        except Exception:  # noqa: BLE001 - figure extraction is best-effort
+            figs = []
+        for fig in figs:
+            db.add(
+                Figure(
+                    project_id=project.id,
+                    source_id=source.id,
+                    source_filename=safe_name,
+                    rel_path=fig.rel_path,
+                    page=fig.page,
+                    order_index=fig_order,
+                    caption=fig.caption or None,
+                    score=fig.score,
+                    suggested=fig.suggested,
+                    # Pre-select recommended figures; the user can adjust later.
+                    mandatory=fig.suggested,
+                )
+            )
+            fig_order += 1
     await db.commit()
     return await _get_project_full(db, project.id)
+
+
+@router.patch("/projects/{project_id}", response_model=ProjectOut)
+async def update_project(
+    project_id: int, payload: ProjectUpdate, db: AsyncSession = Depends(get_db)
+):
+    project = await db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "Progetto non trovato")
+
+    data = payload.model_dump(exclude_unset=True)
+    source_order = data.pop("source_order", None)
+    mandatory_ids = data.pop("mandatory_figure_ids", None)
+
+    for field, value in data.items():
+        setattr(project, field, value)
+
+    if source_order:
+        rows = (
+            (await db.execute(select(Source).where(Source.project_id == project_id)))
+            .scalars()
+            .all()
+        )
+        by_id = {s.id: s for s in rows}
+        for pos, sid in enumerate(source_order):
+            if sid in by_id:
+                by_id[sid].order_index = pos
+
+    if mandatory_ids is not None:
+        rows = (
+            (await db.execute(select(Figure).where(Figure.project_id == project_id)))
+            .scalars()
+            .all()
+        )
+        wanted = set(mandatory_ids)
+        for fig in rows:
+            fig.mandatory = fig.id in wanted
+
+    await db.commit()
+    project = await _get_project_full(db, project_id)
+    return project
+
+
+@router.get("/projects/{project_id}/figures/{filename}")
+async def get_figure(project_id: int, filename: str):
+    """Serve an extracted figure image by filename."""
+    safe = Path(filename).name
+    path = settings.uploads_dir / f"project_{project_id}" / "figures" / safe
+    if not path.exists():
+        raise HTTPException(404, "Figura non trovata")
+    return FileResponse(path, media_type="image/png")
 
 
 @router.get("/projects", response_model=list[ProjectSummary])
@@ -204,6 +300,10 @@ async def _get_project_full(db: AsyncSession, project_id: int) -> Project | None
     result = await db.execute(
         select(Project)
         .where(Project.id == project_id)
-        .options(selectinload(Project.sources), selectinload(Project.sections))
+        .options(
+            selectinload(Project.sources),
+            selectinload(Project.sections),
+            selectinload(Project.figures),
+        )
     )
     return result.scalar_one_or_none()
