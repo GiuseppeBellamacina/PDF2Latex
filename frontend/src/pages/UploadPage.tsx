@@ -3,13 +3,14 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Dropzone from "../components/Dropzone";
 import { api, type Backends } from "../lib/api";
+import { DEFAULT_LANGUAGE, LANGUAGES } from "../lib/languages";
 
 export default function UploadPage() {
   const navigate = useNavigate();
 
   const [files, setFiles] = useState<File[]>([]);
   const [name, setName] = useState("");
-  const [language, setLanguage] = useState("italian");
+  const [language, setLanguage] = useState(DEFAULT_LANGUAGE);
   const [backend, setBackend] = useState("hybrid");
   const [backends, setBackends] = useState<Backends | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -37,7 +38,7 @@ export default function UploadPage() {
       const project = await api.createProject(form);
       navigate(`/configure/${project.id}`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Errore");
+      setError(e instanceof Error ? e.message : "Error");
     } finally {
       setSubmitting(false);
     }
@@ -46,25 +47,23 @@ export default function UploadPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Nuovo documento
-        </h1>
+        <h1 className="text-2xl font-semibold tracking-tight">New document</h1>
         <p className="mt-1 text-sm text-ink-500">
-          Carica i PDF: nel passo successivo potrai scegliere ordine, figure,
-          struttura e copertina.
+          Upload your PDFs: in the next step you can choose order, figures,
+          structure and cover page.
         </p>
       </div>
 
       <div className="card space-y-4">
         <div>
           <label className="mb-1 block text-sm font-medium">
-            Titolo del progetto
+            Project title
           </label>
           <input
             className="input"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Es. Appunti di Deep Learning"
+            placeholder="e.g. Deep Learning notes"
           />
         </div>
 
@@ -72,19 +71,22 @@ export default function UploadPage() {
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
-            <label className="mb-1 block text-sm font-medium">Lingua</label>
+            <label className="mb-1 block text-sm font-medium">Language</label>
             <select
               className="input"
               value={language}
               onChange={(e) => setLanguage(e.target.value)}
             >
-              <option value="italian">Italiano</option>
-              <option value="english">English</option>
+              {LANGUAGES.map((l) => (
+                <option key={l.value} value={l.value}>
+                  {l.label}
+                </option>
+              ))}
             </select>
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium">
-              Backend di estrazione
+              Extraction backend
             </label>
             <select
               className="input"
@@ -92,15 +94,15 @@ export default function UploadPage() {
               onChange={(e) => setBackend(e.target.value)}
             >
               <option value="hybrid">
-                Ibrido — consigliato (testo + figure + OCR)
+                Hybrid — recommended (text + figures + OCR)
               </option>
-              <option value="pymupdf">PyMuPDF (veloce)</option>
+              <option value="pymupdf">PyMuPDF (fast)</option>
               <option
                 value="docling"
                 disabled={backends ? !backends.docling : false}
               >
-                Docling (solo testo strutturato)
-                {backends && !backends.docling ? " — non installato" : ""}
+                Docling (structured text only)
+                {backends && !backends.docling ? " — not installed" : ""}
               </option>
             </select>
           </div>
@@ -113,7 +115,7 @@ export default function UploadPage() {
           disabled={!canSubmit || submitting}
           onClick={handleSubmit}
         >
-          {submitting ? "Caricamento…" : "Continua"}
+          {submitting ? "Uploading…" : "Continue"}
           <ArrowRight size={16} />
         </button>
       </div>

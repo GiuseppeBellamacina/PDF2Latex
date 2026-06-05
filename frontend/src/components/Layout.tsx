@@ -4,9 +4,9 @@ import { cn } from "../lib/utils";
 import ThemeToggle from "./ThemeToggle";
 
 const nav = [
-  { to: "/", label: "Nuovo", icon: Upload, end: true },
-  { to: "/history", label: "Archivio", icon: History, end: false },
-  { to: "/settings", label: "Provider", icon: Settings, end: false },
+  { to: "/", label: "New", icon: Upload, end: true },
+  { to: "/history", label: "History", icon: History, end: false },
+  { to: "/settings", label: "Providers", icon: Settings, end: false },
 ];
 
 export default function Layout() {

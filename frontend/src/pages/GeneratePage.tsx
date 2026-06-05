@@ -41,10 +41,11 @@ export default function GeneratePage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
-            {project?.name ?? "Generazione"}
+            {project?.name ?? "Generation"}
           </h1>
           <p className="mt-1 text-sm text-ink-500">
-            {project?.total_sources ?? 0} documenti · lingua {project?.language}
+            {project?.total_sources ?? 0} documents · language{" "}
+            {project?.language}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -75,7 +76,7 @@ export default function GeneratePage() {
                 start(selectedProviderId!, provider?.default_model ?? undefined)
               }
             >
-              <Play size={16} /> Avvia
+              <Play size={16} /> Start
             </button>
           )}
         </div>
@@ -89,7 +90,7 @@ export default function GeneratePage() {
         <div className="card space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-emerald-600 dark:text-emerald-400">
-              Documento pronto
+              Document ready
             </h2>
             <div className="flex gap-2">
               <a className="btn-ghost" href={api.downloadUrl(id, "tex")}>
@@ -99,12 +100,12 @@ export default function GeneratePage() {
                 <Download size={16} /> PDF
               </a>
               <Link className="btn-primary" to={`/preview/${id}`}>
-                <ExternalLink size={16} /> Anteprima
+                <ExternalLink size={16} /> Preview
               </Link>
             </div>
           </div>
           <iframe
-            title="Anteprima PDF"
+            title="PDF preview"
             src={`${api.downloadUrl(id, "pdf")}#view=FitH`}
             className="h-[70vh] w-full rounded-lg border border-ink-200 dark:border-ink-800"
           />
@@ -113,7 +114,7 @@ export default function GeneratePage() {
 
       {latest?.plan && latest.plan.length > 0 && (
         <div className="card">
-          <h2 className="mb-3 text-sm font-semibold">Struttura proposta</h2>
+          <h2 className="mb-3 text-sm font-semibold">Proposed structure</h2>
           <ul className="space-y-1 text-sm text-ink-600 dark:text-ink-400">
             {latest.plan.map((s, i) => (
               <li key={i}>

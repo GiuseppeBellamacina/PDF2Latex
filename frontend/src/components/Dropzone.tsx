@@ -45,10 +45,10 @@ export default function Dropzone({ files, onChange }: Props) {
       >
         <FileUp size={28} className="text-ink-400" />
         <p className="text-sm font-medium">
-          Trascina qui i PDF o clicca per scegliere
+          Drag your PDFs here or click to choose
         </p>
         <p className="text-xs text-ink-500">
-          Puoi caricare più documenti insieme
+          You can upload multiple documents at once
         </p>
         <input
           ref={inputRef}
@@ -71,7 +71,7 @@ export default function Dropzone({ files, onChange }: Props) {
               <button
                 onClick={() => onChange(files.filter((_, idx) => idx !== i))}
                 className="text-ink-400 hover:text-ink-700 dark:hover:text-ink-200"
-                aria-label="Rimuovi"
+                aria-label="Remove"
               >
                 <X size={15} />
               </button>

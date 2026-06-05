@@ -29,10 +29,10 @@ export default function PreviewPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
-            {project?.name ?? "Anteprima"}
+            {project?.name ?? "Preview"}
           </h1>
           <p className="mt-1 text-sm text-ink-500">
-            Stato: {project?.status} · {project?.total_sections ?? 0} sezioni
+            Status: {project?.status} · {project?.total_sections ?? 0} sections
           </p>
         </div>
         <div className="flex gap-2">
@@ -58,7 +58,7 @@ export default function PreviewPage() {
             )}
           >
             {t === "pdf" ? <FileText size={15} /> : <FileCode size={15} />}
-            {t === "pdf" ? "PDF" : "Sorgente LaTeX"}
+            {t === "pdf" ? "PDF" : "LaTeX source"}
           </button>
         ))}
       </div>
@@ -73,12 +73,12 @@ export default function PreviewPage() {
             />
           ) : (
             <div className="p-10 text-center text-sm text-ink-500">
-              PDF non disponibile. {project?.error_message}
+              PDF not available. {project?.error_message}
             </div>
           )
         ) : (
           <pre className="max-h-[70vh] overflow-auto p-4 font-mono text-xs leading-relaxed">
-            {latex || "Nessun sorgente disponibile."}
+            {latex || "No source available."}
           </pre>
         )}
       </div>

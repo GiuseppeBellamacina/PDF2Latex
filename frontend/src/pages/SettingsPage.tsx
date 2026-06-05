@@ -51,7 +51,7 @@ export default function SettingsPage() {
         api_key: form.api_key,
         base_url: form.base_url,
       });
-      setTestResult(r.success ? `OK: ${r.response}` : `Errore: ${r.error}`);
+      setTestResult(r.success ? `OK: ${r.response}` : `Error: ${r.error}`);
     } finally {
       setBusy(false);
     }
@@ -65,27 +65,26 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Provider LLM</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">LLM providers</h1>
         <p className="mt-1 text-sm text-ink-500">
-          Le chiavi API sono salvate cifrate. Usa <em>fake</em> per provare
-          offline.
+          API keys are stored encrypted. Use <em>fake</em> to try it offline.
         </p>
       </div>
 
       <div className="card space-y-4">
-        <h2 className="text-sm font-semibold">Nuovo provider</h2>
+        <h2 className="text-sm font-semibold">New provider</h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
-            <label className="mb-1 block text-sm font-medium">Nome</label>
+            <label className="mb-1 block text-sm font-medium">Name</label>
             <input
               className="input"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
-              placeholder="Es. OpenAI principale"
+              placeholder="e.g. Main OpenAI"
             />
           </div>
           <div>
-            <label className="mb-1 block text-sm font-medium">Tipo</label>
+            <label className="mb-1 block text-sm font-medium">Type</label>
             <select
               className="input"
               value={form.provider_type}
@@ -102,7 +101,7 @@ export default function SettingsPage() {
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium">
-              Modello predefinito
+              Default model
             </label>
             <input
               className="input"
@@ -151,7 +150,7 @@ export default function SettingsPage() {
             onClick={create}
             disabled={busy || !form.name.trim()}
           >
-            <Plus size={16} /> Aggiungi
+            <Plus size={16} /> Add
           </button>
         </div>
       </div>

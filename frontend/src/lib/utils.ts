@@ -4,7 +4,7 @@ export function cn(...classes: (string | false | null | undefined)[]): string {
 
 export function formatDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleString("it-IT", {
+    return new Date(iso).toLocaleString("en-US", {
       dateStyle: "medium",
       timeStyle: "short",
     });

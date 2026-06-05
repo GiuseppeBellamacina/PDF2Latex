@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import Checkbox from "../components/Checkbox";
 import {
   api,
   type Backends,
@@ -15,6 +16,7 @@ import {
   type Project,
   type Source,
 } from "../lib/api";
+import { LANGUAGES } from "../lib/languages";
 
 export default function ConfigurePage() {
   const { projectId } = useParams();
@@ -35,7 +37,7 @@ export default function ConfigurePage() {
   const [abstract, setAbstract] = useState("");
   const [prompt, setPrompt] = useState("");
   const [structureHint, setStructureHint] = useState("");
-  const [language, setLanguage] = useState("italian");
+  const [language, setLanguage] = useState("english");
   const [backend, setBackend] = useState("pymupdf");
   const [enableOcr, setEnableOcr] = useState(false);
   const [orderedSources, setOrderedSources] = useState<Source[]>([]);
@@ -53,7 +55,7 @@ export default function ConfigurePage() {
         setAbstract(p.abstract ?? "");
         setPrompt(p.user_prompt ?? "");
         setStructureHint(p.structure_hint ?? "");
-        setLanguage(p.language ?? "italian");
+        setLanguage(p.language ?? "english");
         setBackend(p.extractor_backend ?? "pymupdf");
         setEnableOcr(!!p.enable_ocr);
         setOrderedSources(
@@ -64,7 +66,7 @@ export default function ConfigurePage() {
         );
       })
       .catch((e) =>
-        setError(e instanceof Error ? e.message : "Progetto non trovato"),
+        setError(e instanceof Error ? e.message : "Project not found"),
       )
       .finally(() => setLoading(false));
   }, [id]);
@@ -131,7 +133,7 @@ export default function ConfigurePage() {
         setProject(fresh);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Errore nel salvataggio");
+      setError(e instanceof Error ? e.message : "Error while saving");
     } finally {
       setSaving(false);
     }
@@ -140,14 +142,14 @@ export default function ConfigurePage() {
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-ink-500">
-        <Loader2 size={18} className="animate-spin" /> Caricamento…
+        <Loader2 size={18} className="animate-spin" /> Loading…
       </div>
     );
   }
 
   if (!project) {
     return (
-      <p className="text-sm text-red-500">{error ?? "Progetto non trovato"}</p>
+      <p className="text-sm text-red-500">{error ?? "Project not found"}</p>
     );
   }
 
@@ -157,121 +159,120 @@ export default function ConfigurePage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">
-          Configura il documento
+          Configure the document
         </h1>
         <p className="mt-1 text-sm text-ink-500">
-          Definisci copertina, struttura, ordine di estrazione e figure
-          obbligatorie prima di generare.
+          Define cover page, structure, extraction order and mandatory figures
+          before generating.
         </p>
       </div>
 
-      {/* Copertina / metadati */}
+      {/* Cover / metadata */}
       <section className="card space-y-4">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-400">
-          Copertina e prima pagina
+          Cover and first page
         </h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
-            <label className="mb-1 block text-sm font-medium">Titolo</label>
+            <label className="mb-1 block text-sm font-medium">Title</label>
             <input
               className="input"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Titolo del documento"
+              placeholder="Document title"
             />
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium">
-              Sottotitolo <span className="text-ink-400">(opzionale)</span>
+              Subtitle <span className="text-ink-400">(optional)</span>
             </label>
             <input
               className="input"
               value={subtitle}
               onChange={(e) => setSubtitle(e.target.value)}
-              placeholder="Es. Una panoramica completa"
+              placeholder="e.g. A complete overview"
             />
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium">
-              Autore <span className="text-ink-400">(opzionale)</span>
+              Author <span className="text-ink-400">(optional)</span>
             </label>
             <input
               className="input"
               value={author}
               onChange={(e) => setAuthor(e.target.value)}
-              placeholder="Nome e cognome"
+              placeholder="First and last name"
             />
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium">
-              Data <span className="text-ink-400">(opzionale)</span>
+              Date <span className="text-ink-400">(optional)</span>
             </label>
             <input
               className="input"
               value={coverDate}
               onChange={(e) => setCoverDate(e.target.value)}
-              placeholder="Es. Gennaio 2025"
+              placeholder="e.g. January 2025"
             />
           </div>
         </div>
         <div>
           <label className="mb-1 block text-sm font-medium">
-            Abstract <span className="text-ink-400">(opzionale)</span>
+            Abstract <span className="text-ink-400">(optional)</span>
           </label>
           <textarea
             className="input min-h-20 resize-y"
             value={abstract}
             onChange={(e) => setAbstract(e.target.value)}
-            placeholder="Breve riassunto del documento, mostrato dopo la copertina…"
+            placeholder="Short summary of the document, shown after the cover page…"
           />
         </div>
       </section>
 
-      {/* Struttura / indice */}
+      {/* Structure / outline */}
       <section className="card space-y-4">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-400">
-          Struttura, indice e istruzioni
+          Structure, outline and instructions
         </h2>
         <div>
           <label className="mb-1 block text-sm font-medium">
-            Struttura / indice desiderato{" "}
-            <span className="text-ink-400">(opzionale)</span>
+            Desired structure / outline{" "}
+            <span className="text-ink-400">(optional)</span>
           </label>
           <textarea
             className="input min-h-24 resize-y"
             value={structureHint}
             onChange={(e) => setStructureHint(e.target.value)}
             placeholder={
-              "Indica capitoli, sezioni, ordine. Es.\n1. Introduzione\n2. Fondamenti teorici\n3. Architetture\n4. Conclusioni"
+              "List chapters, sections, order. e.g.\n1. Introduction\n2. Theoretical foundations\n3. Architectures\n4. Conclusions"
             }
           />
           <p className="mt-1 text-xs text-ink-500">
-            Se lasciato vuoto, la struttura segue l'ordine di estrazione dei
-            documenti.
+            If left empty, the structure follows the extraction order of the
+            documents.
           </p>
         </div>
         <div>
           <label className="mb-1 block text-sm font-medium">
-            Istruzioni personalizzate{" "}
-            <span className="text-ink-400">(opzionale)</span>
+            Custom instructions <span className="text-ink-400">(optional)</span>
           </label>
           <textarea
             className="input min-h-20 resize-y"
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Es. Taglio divulgativo, includi le formule chiave…"
+            placeholder="e.g. Accessible tone, include the key formulas…"
           />
         </div>
       </section>
 
-      {/* Ordine di estrazione */}
+      {/* Extraction order */}
       <section className="card space-y-4">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-400">
-          Ordine di estrazione dei PDF
+          PDF extraction order
         </h2>
         <p className="text-xs text-ink-500">
-          L'ordine qui sotto determina la sequenza con cui i contenuti vengono
-          uniti nel documento finale.
+          The order below determines the sequence in which contents are merged
+          into the final document.
         </p>
         <ul className="space-y-2">
           {orderedSources.map((s, i) => (
@@ -284,14 +285,14 @@ export default function ConfigurePage() {
               </span>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium">{s.filename}</p>
-                <p className="text-xs text-ink-500">{s.n_pages} pagine</p>
+                <p className="text-xs text-ink-500">{s.n_pages} pages</p>
               </div>
               <div className="flex items-center gap-1">
                 <button
                   className="btn-ghost px-2"
                   disabled={i === 0}
                   onClick={() => moveSource(i, -1)}
-                  title="Sposta su"
+                  title="Move up"
                 >
                   <ArrowUp size={16} />
                 </button>
@@ -299,7 +300,7 @@ export default function ConfigurePage() {
                   className="btn-ghost px-2"
                   disabled={i === orderedSources.length - 1}
                   onClick={() => moveSource(i, 1)}
-                  title="Sposta giù"
+                  title="Move down"
                 >
                   <ArrowDown size={16} />
                 </button>
@@ -309,26 +310,29 @@ export default function ConfigurePage() {
         </ul>
       </section>
 
-      {/* Estrazione / OCR */}
+      {/* Extraction / OCR */}
       <section className="card space-y-4">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-400">
-          Estrazione contenuti
+          Content extraction
         </h2>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
-            <label className="mb-1 block text-sm font-medium">Lingua</label>
+            <label className="mb-1 block text-sm font-medium">Language</label>
             <select
               className="input"
               value={language}
               onChange={(e) => setLanguage(e.target.value)}
             >
-              <option value="italian">Italiano</option>
-              <option value="english">English</option>
+              {LANGUAGES.map((l) => (
+                <option key={l.value} value={l.value}>
+                  {l.label}
+                </option>
+              ))}
             </select>
           </div>
           <div>
             <label className="mb-1 block text-sm font-medium">
-              Backend di estrazione
+              Extraction backend
             </label>
             <select
               className="input"
@@ -336,79 +340,79 @@ export default function ConfigurePage() {
               onChange={(e) => setBackend(e.target.value)}
             >
               <option value="hybrid">
-                Ibrido — consigliato (testo + figure + OCR)
+                Hybrid — recommended (text + figures + OCR)
               </option>
-              <option value="pymupdf">PyMuPDF (veloce)</option>
+              <option value="pymupdf">PyMuPDF (fast)</option>
               <option
                 value="docling"
                 disabled={backends ? !backends.docling : false}
               >
-                Docling (solo testo strutturato)
-                {backends && !backends.docling ? " — non installato" : ""}
+                Docling (structured text only)
+                {backends && !backends.docling ? " — not installed" : ""}
               </option>
             </select>
           </div>
         </div>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            className="h-4 w-4 accent-emerald-500"
-            checked={enableOcr}
-            disabled={backends ? !backends.ocr : false}
-            onChange={(e) => setEnableOcr(e.target.checked)}
-          />
-          Abilita OCR sulle pagine (più lento, utile per PDF scansionati)
-          {backends && !backends.ocr ? (
-            <span className="text-ink-500"> — Tesseract non installato</span>
-          ) : null}
-        </label>
+        <Checkbox
+          checked={enableOcr}
+          disabled={backends ? !backends.ocr : false}
+          onChange={setEnableOcr}
+          label={
+            <>
+              Enable OCR on pages (slower, useful for scanned PDFs)
+              {backends && !backends.ocr ? (
+                <span className="text-ink-500"> — Tesseract not installed</span>
+              ) : null}
+            </>
+          }
+        />
         <p className="text-xs text-ink-500">
-          Le figure vengono già analizzate con OCR al caricamento: quelle che
-          contengono dati (grafici, schemi) sono marcate come{" "}
-          <span className="text-emerald-400">Consigliate</span> e preselezionate
-          qui sotto.
+          Figures are already analyzed with OCR at upload time: those containing
+          data (charts, diagrams) are marked as{" "}
+          <span className="text-emerald-400">Recommended</span> and preselected
+          below.
         </p>
       </section>
 
-      {/* Figure obbligatorie */}
+      {/* Mandatory figures */}
       <section className="card space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-400">
-            Figure da includere
+            Figures to include
           </h2>
           <span className="text-xs text-ink-500">
-            {mandatoryIds.size} / {totalFigures} selezionate
+            {mandatoryIds.size} / {totalFigures} selected
           </span>
         </div>
         {totalFigures > 0 && (
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-ink-500">Selezione rapida:</span>
+            <span className="text-xs text-ink-500">Quick selection:</span>
             <button
               type="button"
               className="btn-ghost px-2 py-1 text-xs"
               onClick={() => selectFigures("suggested")}
             >
-              Consigliate
+              Recommended
             </button>
             <button
               type="button"
               className="btn-ghost px-2 py-1 text-xs"
               onClick={() => selectFigures("all")}
             >
-              Tutte
+              All
             </button>
             <button
               type="button"
               className="btn-ghost px-2 py-1 text-xs"
               onClick={() => selectFigures("none")}
             >
-              Nessuna
+              None
             </button>
           </div>
         )}
         {totalFigures === 0 ? (
           <p className="flex items-center gap-2 text-sm text-ink-500">
-            <ImageIcon size={16} /> Nessuna figura estratta dai PDF.
+            <ImageIcon size={16} /> No figures extracted from the PDFs.
           </p>
         ) : (
           <div className="space-y-6">
@@ -446,7 +450,7 @@ export default function ConfigurePage() {
                           </span>
                           {f.suggested && (
                             <span className="absolute left-1 bottom-1 rounded bg-emerald-500/90 px-1.5 py-0.5 text-[10px] font-medium text-ink-950">
-                              Consigliata
+                              Recommended
                             </span>
                           )}
                           {active && (
@@ -479,14 +483,14 @@ export default function ConfigurePage() {
           onClick={() => save(false)}
         >
           {saving ? <Loader2 size={16} className="animate-spin" /> : null}
-          Salva
+          Save
         </button>
         <button
           className="btn-primary"
           disabled={saving}
           onClick={() => save(true)}
         >
-          Salva e procedi
+          Save and continue
           <ArrowRight size={16} />
         </button>
       </div>

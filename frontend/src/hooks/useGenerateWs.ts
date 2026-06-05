@@ -9,6 +9,14 @@ export interface ProgressEvent {
   total?: number;
   plan?: { part_title: string; title: string }[];
   pdf?: boolean;
+  level?: "info" | "warning" | "error" | "success";
+  detail?: string;
+  tokens?: {
+    calls: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  };
 }
 
 export function useGenerateWs(projectId: number) {

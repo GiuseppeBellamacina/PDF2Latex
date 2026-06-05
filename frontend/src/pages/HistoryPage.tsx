@@ -19,10 +19,10 @@ export default function HistoryPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Archivio</h1>
+      <h1 className="text-2xl font-semibold tracking-tight">History</h1>
 
       {projects.length === 0 ? (
-        <p className="text-sm text-ink-500">Nessun progetto ancora.</p>
+        <p className="text-sm text-ink-500">No projects yet.</p>
       ) : (
         <div className="space-y-2">
           {projects.map((p) => (

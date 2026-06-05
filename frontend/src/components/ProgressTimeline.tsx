@@ -3,12 +3,12 @@ import { type ProgressEvent } from "../hooks/useGenerateWs";
 import { cn } from "../lib/utils";
 
 const STAGES = [
-  { key: "extracting", label: "Estrazione" },
-  { key: "analyzing", label: "Analisi" },
-  { key: "planning", label: "Pianificazione" },
-  { key: "writing", label: "Scrittura" },
-  { key: "reviewing", label: "Revisione" },
-  { key: "done", label: "Completato" },
+  { key: "extracting", label: "Extraction" },
+  { key: "analyzing", label: "Analysis" },
+  { key: "planning", label: "Planning" },
+  { key: "writing", label: "Writing" },
+  { key: "reviewing", label: "Review" },
+  { key: "done", label: "Completed" },
 ];
 
 interface Props {
@@ -27,7 +27,7 @@ export default function ProgressTimeline({ events, latest }: Props) {
     <div className="space-y-5">
       <div>
         <div className="mb-2 flex items-center justify-between text-xs text-ink-500">
-          <span>{latest?.message ?? "In attesa…"}</span>
+          <span>{latest?.message ?? "Waiting…"}</span>
           <span>{progress}%</span>
         </div>
         <div className="h-2 overflow-hidden rounded-full bg-ink-200 dark:bg-ink-800">
@@ -75,15 +75,38 @@ export default function ProgressTimeline({ events, latest }: Props) {
 
       <div className="max-h-56 overflow-auto rounded-lg border border-ink-200 bg-ink-50 p-3 font-mono text-xs dark:border-ink-800 dark:bg-ink-950">
         {events.length === 0 ? (
-          <p className="text-ink-400">Nessun evento.</p>
+          <p className="text-ink-400">No events.</p>
         ) : (
-          events.map((e, i) => (
-            <div key={i} className="text-ink-600 dark:text-ink-400">
-              <span className="text-ink-400">[{e.stage}]</span> {e.message}
-            </div>
-          ))
+          events.map((e, i) => {
+            const level = e.level ?? "info";
+            const color =
+              level === "error"
+                ? "text-red-600 dark:text-red-400"
+                : level === "warning"
+                  ? "text-amber-600 dark:text-amber-400"
+                  : level === "success"
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : "text-ink-600 dark:text-ink-400";
+            return (
+              <div key={i} className={color}>
+                <span className="text-ink-400">[{e.stage}]</span> {e.message}
+                {e.detail && (
+                  <span className="text-ink-400"> — {e.detail}</span>
+                )}
+              </div>
+            );
+          })
         )}
       </div>
+
+      {latest?.tokens && latest.tokens.total_tokens > 0 && (
+        <p className="text-xs text-ink-400">
+          Token: {latest.tokens.total_tokens.toLocaleString()} (
+          {latest.tokens.input_tokens.toLocaleString()} in /{" "}
+          {latest.tokens.output_tokens.toLocaleString()} out) ·{" "}
+          {latest.tokens.calls} LLM calls
+        </p>
+      )}
     </div>
   );
 }
