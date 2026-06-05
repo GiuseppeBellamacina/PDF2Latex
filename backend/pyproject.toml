@@ -3,7 +3,7 @@ name = "pdf2latex-backend"
 version = "0.1.0"
 description = "Agentic backend that turns N PDFs into a comprehensive LaTeX document"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
@@ -30,6 +30,9 @@ dependencies = [
 ocr = ["pytesseract>=0.3.10"]
 docling = ["docling>=2.0"]
 markitdown = ["markitdown>=0.0.1a2"]
+dev = [
+    "ruff>=0.6",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -39,5 +42,15 @@ build-backend = "hatchling.build"
 packages = ["app"]
 
 [tool.ruff]
-line-length = 100
+line-length = 88
 target-version = "py311"
+extend-exclude = [".venv", "storage"]
+
+[tool.ruff.lint]
+# E/W: pycodestyle, F: pyflakes, I: isort (import sorting). The formatter
+# (`ruff format`) owns line wrapping, so E501 (line length) is disabled.
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]

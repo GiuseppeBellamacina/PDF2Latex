@@ -8,20 +8,27 @@ Ispirato al workflow di [EPUB-Translator](https://github.com/GiuseppeBellamacina
 
 ## Architettura
 
-```
-┌──────────────┐     WebSocket / REST     ┌────────────────────────────────────┐
-│  Frontend    │ ───────────────────────► │  Backend (FastAPI)                 │
-│  React+Vite  │                          │                                    │
-│  Tailwind    │                          │  Estrazione PDF (PyMuPDF)          │
-└──────────────┘                          │            │                       │
-                                          │   LangGraph pipeline:              │
-                                          │   analyze (fan-out per PDF)        │
-                                          │      → plan (struttura globale)    │
-                                          │      → write (fan-out, parallelo)  │
-                                          │      → review + pdflatex (retry)   │
-                                          │            │                       │
-                                          │   SQLite (progetti, provider)      │
-                                          └────────────────────────────────────┘
+```mermaid
+flowchart TD
+    UI["Frontend<br/>React + Vite + Tailwind"]
+    API["Backend · FastAPI"]
+    EXTRACT["Estrazione PDF<br/>PyMuPDF · Docling · OCR"]
+    DB[("SQLite<br/>progetti · provider")]
+
+    subgraph PIPELINE["LangGraph pipeline"]
+        direction TB
+        A["Analyze<br/>fan-out per PDF"]
+        P["Plan<br/>struttura globale"]
+        W["Write<br/>fan-out parallelo per sezione"]
+        R["Review + pdflatex<br/>loop di retry"]
+        A --> P --> W --> R
+    end
+
+    UI <-->|"WebSocket / REST"| API
+    API --> EXTRACT
+    EXTRACT --> PIPELINE
+    API <--> DB
+    R -->|"documento LaTeX + PDF"| API
 ```
 
 ### Agenti
@@ -72,6 +79,22 @@ Le chiavi API sono salvate **cifrate** (Fernet) nel database locale.
 ## Personalizzazione
 
 - **Prompt utente**: campo libero per indicare taglio, focus, lunghezza, ordine.
-- **Estrattori**: `pymupdf` (default), `docling`, `markitdown` (extra opzionali),
-  OCR fallback con `pytesseract`.
+- **Estrattori**: `hybrid` (default: Docling per il testo strutturato + tabelle,
+  PyMuPDF per le figure, OCR di fallback), `pymupdf` (veloce), `docling`
+  (solo testo). Docling gira in **sottoprocessi isolati** su intervalli di
+  poche pagine alla volta, così la memoria viene rilasciata tra un blocco e
+  l'altro (niente più `std::bad_alloc` su PDF grandi); il markdown viene messo
+  in cache per hash del file. OCR via `pytesseract` (lingua configurabile con
+  `PDF2TEX_OCR_LANG`, default `ita+eng`).
 - **Lingua**: italiano (default) o inglese.
+
+## Affidabilità ed efficienza
+
+- Chiamate LLM con **retry/backoff** automatico, **limite di concorrenza** e
+  **cache del client**; output strutturato (Pydantic) per analyzer e planner.
+- Analisi **map-reduce** dei documenti lunghi (niente troncamento silenzioso) e
+  selezione del materiale per **rilevanza** nella scrittura.
+- **Lint LaTeX deterministico** prima di `pdflatex` (chiude ambienti/parentesi)
+  per ridurre i giri di revisione.
+- **Logging** dettagliato lato server (`storage/pdf2latex.log`) e lato UI
+  (eventi con livello, dettaglio e conteggio token).

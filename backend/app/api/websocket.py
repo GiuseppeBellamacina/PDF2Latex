@@ -36,7 +36,9 @@ async def generate_ws(websocket: WebSocket, project_id: int):
                     task = active_jobs.get(project_id)
                     if task and not task.done():
                         task.cancel()
-                    await websocket.send_json({"stage": "stopped", "message": "Interrotto"})
+                    await websocket.send_json(
+                        {"stage": "stopped", "message": "Interrotto"}
+                    )
                     break
             except asyncio.TimeoutError:
                 task = active_jobs.get(project_id)

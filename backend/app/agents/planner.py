@@ -6,8 +6,13 @@ import json
 from typing import Any
 
 from app.agents.prompts import PLANNER_SYSTEM
+from app.agents.schemas import PlanSchema
 from app.agents.state import PlannedSection
-from app.agents.utils import call_llm, parse_json_response
+from app.agents.utils import call_llm_structured
+from app.core.config import settings
+from app.core.logging import get_logger
+
+logger = get_logger("planner")
 
 
 async def plan_document(
@@ -37,23 +42,28 @@ async def plan_document(
         f"{prompt_part}"
     )
 
-    raw = await call_llm(llm_config, PLANNER_SYSTEM, user)
-    data = parse_json_response(raw) or {}
+    plan_obj = await call_llm_structured(
+        llm_config,
+        PLANNER_SYSTEM,
+        user,
+        PlanSchema,
+        temperature=settings.planner_temperature,
+        label="plan",
+    )
 
-    title = str(data.get("title") or "Documento Generato")
-    raw_sections = data.get("sections", []) or []
-
+    title = plan_obj.title or "Documento Generato"
     sections: list[PlannedSection] = []
-    for idx, s in enumerate(raw_sections):
+    for idx, s in enumerate(plan_obj.sections):
         sections.append(
             PlannedSection(
-                part_title=str(s.get("part_title", "")),
-                title=str(s.get("title", f"Sezione {idx + 1}")),
-                order_index=int(s.get("order_index", idx)),
-                outline=s.get("outline", {}) or {},
-                source_filenames=list(s.get("source_filenames", []) or []),
+                part_title=s.part_title,
+                title=s.title or f"Sezione {idx + 1}",
+                order_index=int(s.order_index) if s.order_index is not None else idx,
+                outline=s.outline or {},
+                source_filenames=list(s.source_filenames or []),
             )
         )
 
     sections.sort(key=lambda s: s["order_index"])
+    logger.info("Piano: '%s' con %d sezioni", title, len(sections))
     return title, sections

@@ -8,8 +8,10 @@ from typing import Any
 from sqlalchemy import select
 
 from app.agents.graph import run_pipeline
+from app.agents.utils import tokens
 from app.core.config import settings
 from app.core.encryption import decrypt_api_key
+from app.core.logging import get_logger
 from app.db.database import async_session
 from app.db.models import (
     Figure,
@@ -22,6 +24,8 @@ from app.db.models import (
 )
 from app.services.extractor import get_extractor
 from app.services.progress import manager
+
+logger = get_logger("runner")
 
 # Optional few-shot style examples taken from the existing latex/ folder.
 FEWSHOT_PATHS = [
@@ -36,7 +40,9 @@ def _load_few_shot() -> str:
     return ""
 
 
-async def run_generation(project_id: int, provider_id: int, model: str | None = None) -> None:
+async def run_generation(
+    project_id: int, provider_id: int, model: str | None = None
+) -> None:
     """Run the entire generation for a project, streaming progress over WS."""
     async with async_session() as session:
         project = await session.get(Project, project_id)
@@ -50,18 +56,29 @@ async def run_generation(project_id: int, provider_id: int, model: str | None = 
             return
 
         sources = (
-            (await session.execute(select(Source).where(Source.project_id == project_id)))
+            (
+                await session.execute(
+                    select(Source).where(Source.project_id == project_id)
+                )
+            )
             .scalars()
             .all()
         )
         figures = (
-            (await session.execute(select(Figure).where(Figure.project_id == project_id)))
+            (
+                await session.execute(
+                    select(Figure).where(Figure.project_id == project_id)
+                )
+            )
             .scalars()
             .all()
         )
         # Mandatory figures grouped by source filename.
         mandatory_by_name: dict[str, list[str]] = {}
+        captions_by_path: dict[str, str] = {}
         for fig in figures:
+            if fig.caption:
+                captions_by_path[fig.rel_path] = fig.caption
             if fig.mandatory:
                 mandatory_by_name.setdefault(fig.source_filename or "", []).append(
                     fig.rel_path
@@ -91,26 +108,78 @@ async def run_generation(project_id: int, provider_id: int, model: str | None = 
             # ---- Extraction ----
             project.status = ProjectStatus.analyzing
             await session.commit()
-            await manager.emit(project_id, {"stage": "extracting", "message": "Estrazione PDF", "progress": 2})
+            await manager.emit(
+                project_id,
+                {"stage": "extracting", "message": "Estrazione PDF", "progress": 2},
+            )
 
             extractor = get_extractor(
                 project.extractor_backend, enable_ocr=bool(project.enable_ocr)
             )
+            ordered_sources = sorted(sources, key=lambda s: s.order_index)
+            n_src = len(ordered_sources)
+            logger.info(
+                "Progetto %s: estrazione di %d sorgenti (backend=%s, ocr=%s)",
+                project_id,
+                n_src,
+                project.extractor_backend,
+                bool(project.enable_ocr),
+            )
             documents: list[dict[str, Any]] = []
-            for src in sorted(sources, key=lambda s: s.order_index):
-                doc = extractor.extract(Path(src.path), figures_dir)
+            for si, src in enumerate(ordered_sources, start=1):
+                await manager.emit(
+                    project_id,
+                    {
+                        "stage": "extracting",
+                        "message": f"Estrazione {src.filename} ({si}/{n_src})",
+                        "progress": 2 + int(3 * si / max(1, n_src)),
+                        "detail": f"documento {si} di {n_src}",
+                    },
+                )
+                try:
+                    doc = extractor.extract(Path(src.path), figures_dir)
+                except Exception as exc:  # noqa: BLE001 - skip a broken file, keep going
+                    logger.exception("Estrazione fallita per %s: %s", src.filename, exc)
+                    await manager.emit(
+                        project_id,
+                        {
+                            "stage": "extracting",
+                            "message": f"Estrazione fallita: {src.filename}",
+                            "level": "error",
+                            "detail": str(exc)[:200],
+                        },
+                    )
+                    continue
                 src.n_pages = doc.n_pages
                 # Figures available for this source = extracted now + mandatory picks.
-                all_figs = list(dict.fromkeys(doc.figures + mandatory_by_name.get(src.filename, [])))
+                all_figs = list(
+                    dict.fromkeys(doc.figures + mandatory_by_name.get(src.filename, []))
+                )
+                doc_captions = {
+                    rel: captions_by_path[rel]
+                    for rel in all_figs
+                    if rel in captions_by_path
+                }
                 documents.append(
                     {
                         "filename": doc.filename,
                         "full_text": doc.full_text(),
                         "figures": all_figs,
+                        "figure_captions": doc_captions,
                         "mandatory_figures": mandatory_by_name.get(src.filename, []),
                     }
                 )
+                logger.info(
+                    "Estratto %s: %d pagine, %d figure, %d caratteri di testo",
+                    src.filename,
+                    doc.n_pages,
+                    len(all_figs),
+                    len(doc.full_text()),
+                )
             await session.commit()
+
+            if not documents:
+                raise RuntimeError("Nessun documento estratto correttamente")
 
             # ---- Pipeline ----
             final = await run_pipeline(
@@ -134,7 +203,9 @@ async def run_generation(project_id: int, provider_id: int, model: str | None = 
             project.output_tex_path = str(tex_path)
             project.output_pdf_path = final.get("pdf_path")
             project.status = (
-                ProjectStatus.completed if final.get("pdf_path") else ProjectStatus.failed
+                ProjectStatus.completed
+                if final.get("pdf_path")
+                else ProjectStatus.failed
             )
             if not final.get("pdf_path"):
                 project.error_message = "Compilazione LaTeX non riuscita"
@@ -144,19 +215,38 @@ async def run_generation(project_id: int, provider_id: int, model: str | None = 
                 project_id,
                 {
                     "stage": "done",
-                    "message": "Completato" if final.get("pdf_path") else "Terminato con errori",
+                    "message": (
+                        "Completato"
+                        if final.get("pdf_path")
+                        else "Terminato con errori"
+                    ),
                     "progress": 100,
                     "status": project.status.value,
                     "pdf": bool(final.get("pdf_path")),
+                    "level": "success" if final.get("pdf_path") else "error",
+                    "tokens": tokens.snapshot(),
                 },
             )
+            logger.info(
+                "Progetto %s terminato: status=%s, token=%s",
+                project_id,
+                project.status.value,
+                tokens.snapshot(),
+            )
         except Exception as exc:  # noqa: BLE001 - report failure to UI + DB
+            logger.exception("Generazione fallita per progetto %s: %s", project_id, exc)
             project.status = ProjectStatus.failed
             project.error_message = str(exc)
             await session.commit()
             await manager.emit(
                 project_id,
-                {"stage": "error", "message": str(exc), "progress": 100, "status": "failed"},
+                {
+                    "stage": "error",
+                    "message": str(exc),
+                    "progress": 100,
+                    "status": "failed",
+                    "level": "error",
+                },
             )
 
 

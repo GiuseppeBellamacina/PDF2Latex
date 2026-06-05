@@ -62,6 +62,30 @@ class CompileResult:
     log: str
 
 
+# Map our language values to the option name expected by the babel package.
+# Anything unknown falls through to ``english`` so compilation never breaks.
+_BABEL_LANGUAGES: dict[str, str] = {
+    "english": "english",
+    "italian": "italian",
+    "french": "french",
+    "german": "ngerman",
+    "spanish": "spanish",
+    "portuguese": "portuguese",
+    "dutch": "dutch",
+    "russian": "russian",
+    "polish": "polish",
+    "swedish": "swedish",
+}
+
+
+def _babel_language(language: str) -> str:
+    """Resolve a language value to a valid babel option name."""
+    key = (language or "").strip().lower()
+    if key.startswith("ital"):
+        return "italian"
+    return _BABEL_LANGUAGES.get(key, "english")
+
+
 def assemble_document(
     title: str,
     body_parts: list[str],
@@ -72,7 +96,7 @@ def assemble_document(
     cover_date: str = "",
 ) -> str:
     """Join the preamble, title page, optional abstract, body and postamble."""
-    babel_lang = "italian" if language.lower().startswith("ital") else language.lower()
+    babel_lang = _babel_language(language)
     preamble = PREAMBLE % {"language": babel_lang}
 
     subtitle_block = ""

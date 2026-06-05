@@ -18,13 +18,24 @@ from app.agents.analyzer import analyze_document
 from app.agents.planner import plan_document
 from app.agents.reviewer import review_document
 from app.agents.state import GraphState
+from app.agents.utils import tokens
 from app.agents.writer import write_section
+from app.core.logging import get_logger
 from app.services.latex import assemble_document, write_and_compile
+from app.services.latex_lint import lint_latex
+
+logger = get_logger("pipeline")
 
 MAX_REVIEW_RETRIES = 2
 
 
 async def _emit(state: GraphState, event: dict[str, Any]) -> None:
+    # Mirror every progress event into the server log so the backend console
+    # and the UI tell the same story.
+    level = event.get("level", "info")
+    msg = f"[{event.get('stage', '?')}] {event.get('message', '')}"
+    log = getattr(logger, level if level in ("info", "warning", "error") else "info")
+    log(msg)
     cb = state.get("progress")
     if cb is not None:
         await cb(event)
@@ -33,23 +44,53 @@ async def _emit(state: GraphState, event: dict[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 # Nodes                                                                         #
 # --------------------------------------------------------------------------- #
+def _compile_error_excerpt(log: str, max_lines: int = 6) -> str:
+    """Pull the most relevant error lines out of a pdflatex log for the UI."""
+    if not log:
+        return ""
+    lines = [ln for ln in log.splitlines() if ln.strip()]
+    errors = [
+        ln for ln in lines if ln.startswith("!") or "Error" in ln or "Undefined" in ln
+    ]
+    chosen = errors[:max_lines] or lines[-max_lines:]
+    return " | ".join(ln.strip()[:160] for ln in chosen)
+
+
 async def analyze_node(state: GraphState) -> dict[str, Any]:
     documents = state["documents"]
     llm_config = state["llm_config"]
-    await _emit(state, {"stage": "analyzing", "message": "Analisi dei documenti", "progress": 5})
+    await _emit(
+        state,
+        {
+            "stage": "analyzing",
+            "message": f"Analisi di {len(documents)} documenti",
+            "progress": 5,
+            "detail": ", ".join(d["filename"] for d in documents)[:200],
+        },
+    )
 
     tasks = [analyze_document(doc, llm_config) for doc in documents]
     analyses = await asyncio.gather(*tasks)
 
+    n_topics = sum(len(a["topics"]) for a in analyses)
     await _emit(
         state,
-        {"stage": "analyzing", "message": f"Analizzati {len(analyses)} documenti", "progress": 25},
+        {
+            "stage": "analyzing",
+            "message": f"Analizzati {len(analyses)} documenti",
+            "progress": 25,
+            "level": "success",
+            "detail": f"{n_topics} argomenti individuati",
+        },
     )
     return {"analyses": list(analyses)}
 
 
 async def plan_node(state: GraphState) -> dict[str, Any]:
-    await _emit(state, {"stage": "planning", "message": "Pianificazione struttura", "progress": 30})
+    await _emit(
+        state,
+        {"stage": "planning", "message": "Pianificazione struttura", "progress": 30},
+    )
 
     title, plan = await plan_document(
         analyses=[dict(a) for a in state["analyses"]],
@@ -70,7 +111,10 @@ async def plan_node(state: GraphState) -> dict[str, Any]:
             "stage": "planning",
             "message": f"Struttura: {len(plan)} sezioni",
             "progress": 40,
-            "plan": [{"part_title": s["part_title"], "title": s["title"]} for s in plan],
+            "level": "success",
+            "plan": [
+                {"part_title": s["part_title"], "title": s["title"]} for s in plan
+            ],
         },
     )
     return {"title": title, "plan": plan}
@@ -78,16 +122,25 @@ async def plan_node(state: GraphState) -> dict[str, Any]:
 
 async def write_node(state: GraphState) -> dict[str, Any]:
     plan = state["plan"]
-    documents_by_name = {d["filename"]: d.get("full_text", "") for d in state["documents"]}
+    documents_by_name = {
+        d["filename"]: d.get("full_text", "") for d in state["documents"]
+    }
     figures_by_name = {d["filename"]: d.get("figures", []) for d in state["documents"]}
     mandatory_by_name = {
         d["filename"]: d.get("mandatory_figures", []) for d in state["documents"]
     }
+    # Aggregate every figure's OCR caption so the writer knows what each ID
+    # actually depicts when deciding which to include.
+    captions_by_path: dict[str, str] = {}
+    for d in state["documents"]:
+        captions_by_path.update(d.get("figure_captions", {}) or {})
     few_shot = state.get("few_shot", "")
     language = state.get("language", "italian")
     llm_config = state["llm_config"]
 
-    await _emit(state, {"stage": "writing", "message": "Scrittura sezioni", "progress": 45})
+    await _emit(
+        state, {"stage": "writing", "message": "Scrittura sezioni", "progress": 45}
+    )
 
     total = len(plan)
     done = 0
@@ -100,6 +153,7 @@ async def write_node(state: GraphState) -> dict[str, Any]:
             documents_by_name,
             figures_by_name,
             mandatory_by_name,
+            captions_by_path,
             few_shot,
             language,
             llm_config,
@@ -161,7 +215,10 @@ def _ensure_mandatory_figures(state: GraphState, body_parts: list[str]) -> list[
 
 
 async def review_node(state: GraphState) -> dict[str, Any]:
-    await _emit(state, {"stage": "reviewing", "message": "Revisione e compilazione", "progress": 82})
+    await _emit(
+        state,
+        {"stage": "reviewing", "message": "Revisione e compilazione", "progress": 82},
+    )
 
     title = state.get("title", "Documento Generato")
     language = state.get("language", "italian")
@@ -182,6 +239,25 @@ async def review_node(state: GraphState) -> dict[str, Any]:
         cover_date=metadata.get("cover_date") or "",
     )
 
+    # Deterministic repair pass BEFORE pdflatex: fixes the most common
+    # mechanical mistakes (unbalanced braces/environments, leftover \figref)
+    # without spending an LLM round-trip.
+    from app.core.config import settings as _settings
+
+    if _settings.latex_lint:
+        latex, lint_notes = lint_latex(latex)
+        if lint_notes:
+            await _emit(
+                state,
+                {
+                    "stage": "reviewing",
+                    "message": f"Lint LaTeX: {len(lint_notes)} correzioni",
+                    "progress": 83,
+                    "level": "info",
+                    "detail": "; ".join(lint_notes[:8]),
+                },
+            )
+
     work_dir = Path(state.get("work_dir", "storage/output/_tmp"))  # type: ignore[arg-type]
     figures_src = state.get("figures_dir")
     figures_path = Path(figures_src) if figures_src else None
@@ -194,7 +270,13 @@ async def review_node(state: GraphState) -> dict[str, Any]:
         if result.success:
             await _emit(
                 state,
-                {"stage": "reviewing", "message": "Compilazione riuscita", "progress": 95},
+                {
+                    "stage": "reviewing",
+                    "message": "Compilazione riuscita",
+                    "progress": 95,
+                    "level": "success",
+                    "tokens": tokens.snapshot(),
+                },
             )
             return {"final_latex": latex, "pdf_path": result.pdf_path}
 
@@ -206,14 +288,24 @@ async def review_node(state: GraphState) -> dict[str, Any]:
                     "stage": "reviewing",
                     "message": f"Correzione errori (tentativo {attempt + 1})",
                     "progress": 85 + attempt * 3,
+                    "level": "warning",
+                    "detail": _compile_error_excerpt(compile_log),
                 },
             )
             latex = await review_document(latex, state["llm_config"], compile_log)
+            if _settings.latex_lint:
+                latex, _ = lint_latex(latex)
 
     # Failed to compile after retries: still return the latex for inspection.
     await _emit(
         state,
-        {"stage": "reviewing", "message": "Compilazione non riuscita", "progress": 95},
+        {
+            "stage": "reviewing",
+            "message": "Compilazione non riuscita",
+            "progress": 95,
+            "level": "error",
+            "detail": _compile_error_excerpt(compile_log),
+        },
     )
     return {"final_latex": latex, "pdf_path": None, "compile_log": compile_log}
 

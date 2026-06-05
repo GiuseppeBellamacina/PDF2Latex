@@ -9,8 +9,12 @@ from typing import Any
 from app.agents.prompts import WRITER_SYSTEM
 from app.agents.state import PlannedSection, WrittenSection
 from app.agents.utils import call_llm, strip_latex_fences
+from app.core.config import settings
+from app.core.logging import get_logger
+from app.services.text_cleaning import outline_terms, select_relevant_chunks
 
-MAX_SOURCE_CHARS = 12000
+logger = get_logger("writer")
+
 MAX_FEWSHOT_CHARS = 6000
 MAX_FIGURES_PER_SECTION = 6
 
@@ -94,7 +98,9 @@ def expand_figrefs(
 
     result = "".join(out)
 
-    missing = [m for m in dict.fromkeys(mandatory_ids) if m not in used and m in id_to_path]
+    missing = [
+        m for m in dict.fromkeys(mandatory_ids) if m not in used and m in id_to_path
+    ]
     if missing:
         blocks = [_figure_block(id_to_path[m], "") for m in missing]
         result = result.rstrip() + "\n\n" + "\n\n".join(blocks) + "\n"
@@ -106,6 +112,7 @@ async def write_section(
     documents_by_name: dict[str, str],
     figures_by_name: dict[str, list[str]],
     mandatory_by_name: dict[str, list[str]],
+    captions_by_path: dict[str, str],
     few_shot: str,
     language: str,
     llm_config: dict[str, Any],
@@ -113,13 +120,20 @@ async def write_section(
     """Generate the LaTeX body for one planned section."""
     outline_json = json.dumps(section["outline"], ensure_ascii=False, indent=2)
 
+    # Relevance-based source selection (instead of blind truncation): rank the
+    # source passages by overlap with the section title + outline and keep the
+    # most relevant ones up to the budget.
+    terms = outline_terms(section["title"], section.get("outline", {}))
     source_text = ""
     figures: list[str] = []
     mandatory: list[str] = []
+    n_sources = len(section["source_filenames"]) or 1
+    per_source_budget = max(2000, settings.writer_source_chars // n_sources)
     for fname in section["source_filenames"]:
         chunk = documents_by_name.get(fname, "")
         if chunk:
-            source_text += f"\n--- {fname} ---\n{chunk[:MAX_SOURCE_CHARS]}\n"
+            selected = select_relevant_chunks(chunk, terms, per_source_budget)
+            source_text += f"\n--- {fname} ---\n{selected}\n"
         figures.extend(figures_by_name.get(fname, []))
         mandatory.extend(mandatory_by_name.get(fname, []))
 
@@ -130,6 +144,10 @@ async def write_section(
     for rel in mandatory:
         id_to_path.setdefault(_fig_id(rel), rel)
     mandatory_ids = [_fig_id(rel) for rel in dict.fromkeys(mandatory)]
+
+    def _label(fid: str) -> str:
+        cap = (captions_by_path.get(id_to_path.get(fid, ""), "") or "").strip()
+        return f"{fid} — {cap}" if cap else fid
 
     fewshot_part = (
         f"\n\nEsempio di stile LaTeX desiderato:\n{few_shot[:MAX_FEWSHOT_CHARS]}"
@@ -143,16 +161,19 @@ async def write_section(
     ]
     optional_ids = list(dict.fromkeys(optional_ids))[:MAX_FIGURES_PER_SECTION]
     if mandatory_ids:
-        listed = "\n".join(f"- {fid}" for fid in mandatory_ids)
+        listed = "\n".join(f"- {_label(fid)}" for fid in mandatory_ids)
         figures_part += (
             "\n\nFigure OBBLIGATORIE: inseriscile TUTTE con \\figref{ID}{didascalia} "
-            "(una per riga), scegliendo una didascalia pertinente:\n" + listed
+            "(una per riga). L'ID è prima del trattino; dopo il trattino c'è una "
+            "descrizione del contenuto (da OCR) utile a scrivere una didascalia "
+            "pertinente:\n" + listed
         )
     if optional_ids:
-        listed = "\n".join(f"- {fid}" for fid in optional_ids)
+        listed = "\n".join(f"- {_label(fid)}" for fid in optional_ids)
         figures_part += (
             "\n\nFigure disponibili (facoltative, usa \\figref{ID}{didascalia} solo se "
-            "pertinenti):\n" + listed
+            "pertinenti; la descrizione dopo il trattino aiuta a capire il "
+            "contenuto):\n" + listed
         )
 
     user = (
@@ -165,9 +186,21 @@ async def write_section(
         f"{fewshot_part}"
     )
 
-    raw = await call_llm(llm_config, WRITER_SYSTEM, user)
+    raw = await call_llm(
+        llm_config,
+        WRITER_SYSTEM,
+        user,
+        temperature=settings.writer_temperature,
+        label=f"write:{section['title'][:40]}",
+    )
     latex = strip_latex_fences(raw)
     latex = expand_figrefs(latex, id_to_path, mandatory_ids)
+    logger.info(
+        "Sezione scritta: '%s' (%d caratteri, %d figure obbligatorie)",
+        section["title"],
+        len(latex),
+        len(mandatory_ids),
+    )
 
     return WrittenSection(
         title=section["title"],

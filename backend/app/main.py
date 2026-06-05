@@ -10,11 +10,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router
 from app.api.websocket import ws_router
 from app.core.config import settings
+from app.core.logging import get_logger, setup_logging
 from app.db.database import init_db
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    setup_logging()
+    logger = get_logger("main")
+    logger.info("Avvio %s (log level=%s)", settings.app_name, settings.log_level)
     await init_db()
     yield
 

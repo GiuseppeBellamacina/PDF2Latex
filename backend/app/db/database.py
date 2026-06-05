@@ -47,9 +47,7 @@ def _migrate_add_columns(sync_conn) -> None:  # noqa: ANN001 - sqlalchemy Connec
         }
         for col, ddl in columns.items():
             if col not in existing:
-                sync_conn.exec_driver_sql(
-                    f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"
-                )
+                sync_conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:

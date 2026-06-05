@@ -14,6 +14,7 @@ class SourceAnalysis(TypedDict):
     topics: list[str]
     formulas: list[str]
     figures: list[str]
+    keywords: list[str]
 
 
 class PlannedSection(TypedDict):
@@ -35,7 +36,9 @@ class GraphState(TypedDict, total=False):
     # Inputs
     user_prompt: str
     language: str
-    documents: list[dict[str, Any]]  # serialized ExtractedDocument {filename, full_text, figures}
+    documents: list[
+        dict[str, Any]
+    ]  # serialized ExtractedDocument {filename, full_text, figures}
     few_shot: str
     metadata: dict[str, Any]  # title/author/subtitle/abstract/cover_date
     structure_hint: str

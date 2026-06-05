@@ -9,14 +9,12 @@ from sqlalchemy import (
     Column,
     DateTime,
     Float,
-)
-from sqlalchemy import Enum as SAEnum
-from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
     Text,
 )
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import DeclarativeBase, relationship
 
 
@@ -149,7 +147,9 @@ class ProviderConfig(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False, unique=True)
-    provider_type = Column(String(50), nullable=False)  # openai|anthropic|ollama|custom|fake
+    provider_type = Column(
+        String(50), nullable=False
+    )  # openai|anthropic|ollama|custom|fake
     api_key_encrypted = Column(Text, nullable=True)
     base_url = Column(String(512), nullable=True)
     default_model = Column(String(100), nullable=True)

@@ -247,8 +247,10 @@ async def get_figure(project_id: int, filename: str):
 @router.get("/projects", response_model=list[ProjectSummary])
 async def list_projects(db: AsyncSession = Depends(get_db)):
     rows = (
-        await db.execute(select(Project).order_by(Project.created_at.desc()))
-    ).scalars().all()
+        (await db.execute(select(Project).order_by(Project.created_at.desc())))
+        .scalars()
+        .all()
+    )
     return rows
 
 
