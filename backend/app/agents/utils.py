@@ -15,11 +15,13 @@ Centralises every LLM interaction so robustness lives in one place:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import random
 import re
 import threading
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, TypeVar
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -220,6 +222,72 @@ async def call_llm_structured(
     else:
         logger.warning("Nessun JSON valido nella risposta di '%s'", label)
     return schema()
+
+
+def _image_to_data_uri(path: Path) -> str | None:
+    """Read an image file and return a base64 ``data:`` URI (or None on error)."""
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        logger.debug("Immagine non leggibile %s: %s", path, exc)
+        return None
+    ext = path.suffix.lower().lstrip(".") or "png"
+    mime = "jpeg" if ext in ("jpg", "jpeg") else ext
+    return f"data:image/{mime};base64," + base64.b64encode(raw).decode("ascii")
+
+
+async def call_vision_structured(
+    llm_config: dict[str, Any],
+    system: str,
+    user: str,
+    images: list[Path],
+    schema: type[T],
+    temperature: float | None = None,
+    label: str = "vision",
+) -> T | None:
+    """Validated ``schema`` from a multimodal (text + images) LLM call.
+
+    Sends the page images alongside the text prompt so a vision-capable model
+    can judge the document the way a person would. Returns ``None`` when vision
+    is unavailable for this provider/model (the caller then falls back to a
+    text-only review). The offline ``fake`` provider has no vision, so it also
+    returns ``None``.
+    """
+    cfg = LLMConfig(**llm_config)
+    if cfg.provider == "fake" or not images:
+        return None
+
+    content: list[dict[str, Any]] = [{"type": "text", "text": user}]
+    for img in images:
+        uri = _image_to_data_uri(img)
+        if uri:
+            content.append({"type": "image_url", "image_url": {"url": uri}})
+    if len(content) == 1:  # no images survived
+        return None
+
+    model = _get_model(cfg, temperature)
+    messages = [SystemMessage(content=system), HumanMessage(content=content)]
+    try:
+        structured = model.with_structured_output(schema)
+        result = await _ainvoke_with_retry(structured, messages, label)
+        if isinstance(result, schema):
+            return result
+        if isinstance(result, dict):
+            return schema.model_validate(result)
+    except Exception as exc:  # noqa: BLE001 - fall back to text-only judge
+        logger.warning("Vision judge non disponibile per '%s': %s", label, exc)
+        return None
+
+    # Some providers return text even with structured output; parse leniently.
+    try:
+        raw_result = await _ainvoke_with_retry(model, messages, label)
+        _record_usage(raw_result)
+        data = parse_json_response(str(getattr(raw_result, "content", raw_result)))
+        if isinstance(data, dict):
+            return schema.model_validate(data)
+    except Exception as exc:  # noqa: BLE001 - give up on vision, use text fallback
+        logger.warning("Vision judge fallback fallito per '%s': %s", label, exc)
+    return None
 
 
 def parse_json_response(text: str) -> Any:

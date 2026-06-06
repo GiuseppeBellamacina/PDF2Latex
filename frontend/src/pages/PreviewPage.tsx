@@ -1,4 +1,4 @@
-import { Download, FileCode, FileText } from "lucide-react";
+import { Download, FileArchive, FileCode, FileText } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api, type Project } from "../lib/api";
@@ -6,7 +6,7 @@ import { cn } from "../lib/utils";
 
 export default function PreviewPage() {
   const { projectId } = useParams();
-  const id = Number(projectId);
+  const id = projectId ?? "";
   const [project, setProject] = useState<Project | null>(null);
   const [latex, setLatex] = useState<string>("");
   const [tab, setTab] = useState<"pdf" | "latex">("pdf");
@@ -37,7 +37,7 @@ export default function PreviewPage() {
         </div>
         <div className="flex gap-2">
           <a className="btn-ghost" href={api.downloadUrl(id, "tex")}>
-            <FileCode size={16} /> .tex
+            <FileArchive size={16} /> LaTeX (.zip)
           </a>
           {hasPdf && (
             <a className="btn-primary" href={api.downloadUrl(id, "pdf")}>

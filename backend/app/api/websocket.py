@@ -5,18 +5,35 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from sqlalchemy import select
 
+from app.db.database import async_session
+from app.db.models import Project
 from app.services.progress import manager
 from app.services.runner import run_generation
 
 ws_router = APIRouter()
 
-# Track running generation tasks so they can be cancelled.
+# Track running generation tasks so they can be cancelled (keyed by internal id).
 active_jobs: dict[int, asyncio.Task] = {}
 
 
-@ws_router.websocket("/ws/generate/{project_id}")
-async def generate_ws(websocket: WebSocket, project_id: int):
+async def _resolve_project_id(public_id: str) -> int | None:
+    """Map an opaque public project id to the internal integer id."""
+    async with async_session() as session:
+        row = await session.execute(
+            select(Project.id).where(Project.public_id == public_id)
+        )
+        return row.scalar_one_or_none()
+
+
+@ws_router.websocket("/ws/generate/{project_key}")
+async def generate_ws(websocket: WebSocket, project_key: str):
+    project_id = await _resolve_project_id(project_key)
+    if project_id is None:
+        await websocket.close(code=4004)
+        return
+
     await manager.connect(project_id, websocket)
     try:
         # First message from client must contain provider_id (and optional model).
@@ -50,8 +67,11 @@ async def generate_ws(websocket: WebSocket, project_id: int):
         await manager.disconnect(project_id, websocket)
 
 
-@ws_router.post("/projects/{project_id}/stop")
-async def stop_generation(project_id: int):
+@ws_router.post("/projects/{project_key}/stop")
+async def stop_generation(project_key: str):
+    project_id = await _resolve_project_id(project_key)
+    if project_id is None:
+        return {"stopped": False}
     task = active_jobs.get(project_id)
     if task and not task.done():
         task.cancel()

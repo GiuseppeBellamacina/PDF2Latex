@@ -16,7 +16,6 @@ from app.services.text_cleaning import outline_terms, select_relevant_chunks
 logger = get_logger("writer")
 
 MAX_FEWSHOT_CHARS = 6000
-MAX_FIGURES_PER_SECTION = 6
 
 
 def _fig_id(rel_path: str) -> str:
@@ -24,14 +23,30 @@ def _fig_id(rel_path: str) -> str:
     return Path(rel_path).stem
 
 
-def _figure_block(rel_path: str, caption: str) -> str:
+def figure_latex(rel_path: str, caption: str) -> str:
+    """Render a single figure with safe, bounded sizing.
+
+    ``keepaspectratio`` plus an explicit ``width``/``height`` cap guarantees the
+    image never overflows the text block nor blows up to full-page size, which
+    is what happened with a bare ``width=0.8\\linewidth``. ``[htbp]`` lets LaTeX
+    place the float sensibly instead of forcing it exactly in place (``[H]``),
+    which produced large gaps and stranded images.
+    """
     cap = caption.strip() or "Figura tratta dal materiale sorgente."
+    w = settings.figure_width_ratio
+    h = settings.figure_max_height_ratio
     return (
-        "\\begin{figure}[H]\\centering\n"
-        f"\\includegraphics[width=0.8\\linewidth]{{{rel_path}}}\n"
+        "\\begin{figure}[htbp]\\centering\n"
+        f"\\includegraphics[width={w:.2f}\\linewidth,"
+        f"height={h:.2f}\\textheight,keepaspectratio]{{{rel_path}}}\n"
         f"\\caption{{{cap}}}\n"
         "\\end{figure}"
     )
+
+
+# Backwards-compatible alias used internally.
+def _figure_block(rel_path: str, caption: str) -> str:
+    return figure_latex(rel_path, caption)
 
 
 def _read_brace_arg(s: str, i: int) -> tuple[str, int]:
@@ -111,13 +126,18 @@ async def write_section(
     section: PlannedSection,
     documents_by_name: dict[str, str],
     figures_by_name: dict[str, list[str]],
-    mandatory_by_name: dict[str, list[str]],
+    assigned_mandatory: list[str],
     captions_by_path: dict[str, str],
     few_shot: str,
     language: str,
     llm_config: dict[str, Any],
 ) -> WrittenSection:
-    """Generate the LaTeX body for one planned section."""
+    """Generate the LaTeX body for one planned section.
+
+    ``assigned_mandatory`` is the list of figure paths assigned to THIS section
+    (each mandatory figure is assigned to exactly one section upstream, so no
+    image is forced into multiple sections).
+    """
     outline_json = json.dumps(section["outline"], ensure_ascii=False, indent=2)
 
     # Relevance-based source selection (instead of blind truncation): rank the
@@ -126,7 +146,6 @@ async def write_section(
     terms = outline_terms(section["title"], section.get("outline", {}))
     source_text = ""
     figures: list[str] = []
-    mandatory: list[str] = []
     n_sources = len(section["source_filenames"]) or 1
     per_source_budget = max(2000, settings.writer_source_chars // n_sources)
     for fname in section["source_filenames"]:
@@ -135,7 +154,12 @@ async def write_section(
             selected = select_relevant_chunks(chunk, terms, per_source_budget)
             source_text += f"\n--- {fname} ---\n{selected}\n"
         figures.extend(figures_by_name.get(fname, []))
-        mandatory.extend(mandatory_by_name.get(fname, []))
+
+    # Cap how many mandatory figures land in a single section so a slide-heavy
+    # source cannot flood it; the rest were assigned to other sections upstream.
+    mandatory = list(dict.fromkeys(assigned_mandatory))[
+        : settings.max_figures_per_section
+    ]
 
     # Deterministic figure registry: ID -> real relative path.
     id_to_path: dict[str, str] = {}
@@ -159,7 +183,7 @@ async def write_section(
     optional_ids = [
         fid for fid in (_fig_id(f) for f in figures) if fid not in set(mandatory_ids)
     ]
-    optional_ids = list(dict.fromkeys(optional_ids))[:MAX_FIGURES_PER_SECTION]
+    optional_ids = list(dict.fromkeys(optional_ids))[: settings.max_figures_per_section]
     if mandatory_ids:
         listed = "\n".join(f"- {_label(fid)}" for fid in mandatory_ids)
         figures_part += (

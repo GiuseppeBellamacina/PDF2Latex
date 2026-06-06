@@ -25,6 +25,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,6 +34,21 @@ from app.core.logging import get_logger
 from app.services.text_cleaning import strip_recurring_lines
 
 logger = get_logger("extractor")
+
+# A progress callback receives a UI-ready event dict (stage/message/detail/...).
+ProgressCb = Callable[[dict], None] | None
+
+
+def _notify(progress: ProgressCb, **event) -> None:
+    """Best-effort progress emit (never let UI plumbing break extraction)."""
+    if progress is None:
+        return
+    try:
+        event.setdefault("stage", "extracting")
+        progress(event)
+    except Exception as exc:  # noqa: BLE001 - progress is best-effort
+        logger.debug("progress callback fallita: %s", exc)
+
 
 # Embedded images smaller than this (in pixels, on either side) are treated as
 # decorative icons/logos and skipped.
@@ -63,26 +79,46 @@ def _file_hash(pdf_path: Path) -> str:
 def _score_figure(width: int, height: int, caption: str) -> tuple[float, bool]:
     """Heuristic: is this embedded image worth including in the document?
 
-    Combines the rendered size (decorative icons are small) with the amount of
-    text recovered via OCR (charts/diagrams/schemas carry labels, photos and
-    background art usually do not). Returns ``(score, suggested)``.
+    Combines rendered size, aspect ratio and the amount of text recovered via
+    OCR. Charts/diagrams/schemas tend to be medium/large with a diagram-like
+    aspect ratio and carry labels; decorative icons are tiny, banners/rules are
+    extremely elongated, and full-slide screenshots are huge. Returns
+    ``(score, suggested)``.
     """
     min_side = min(width, height)
+    max_side = max(width, height)
+    aspect = max_side / max(min_side, 1)
     words = len(caption.split())
+
     score = 0.0
-    if min_side >= 220:
-        score += 0.5
-    elif min_side >= 120:
+    # Size: too small = decorative; medium/large = likely meaningful; enormous
+    # images are often full-slide screenshots (still useful but less certain).
+    if min_side < 110:
+        score += 0.0
+    elif min_side < 200:
+        score += 0.25
+    elif min_side < 1000:
+        score += 0.4
+    else:
         score += 0.3
-    # A clearly non-square aspect ratio is typical of charts/diagrams.
-    if max(width, height) >= 1.6 * max(min_side, 1):
-        score += 0.1
-    if words >= 4:
-        score += 0.45
+
+    # Aspect ratio: diagram/chart-like shapes get a bonus; banners/thin rules
+    # (very elongated) are penalised.
+    if 1.15 <= aspect <= 2.8:
+        score += 0.12
+    elif aspect > 4.0:
+        score -= 0.18
+
+    # OCR text is the strongest positive signal (charts/diagrams have labels).
+    if words >= 6:
+        score += 0.5
+    elif words >= 2:
+        score += 0.3
     elif words >= 1:
-        score += 0.2
-    score = round(min(score, 1.0), 3)
-    return score, score >= 0.5
+        score += 0.12
+
+    score = round(max(0.0, min(score, 1.0)), 3)
+    return score, score >= 0.55
 
 
 def _clean_caption(text: str) -> str:
@@ -108,7 +144,15 @@ def tesseract_available() -> bool:
         )
         _TESSERACT_OK = True
     except Exception as exc:  # noqa: BLE001 - any failure means OCR is unusable
-        logger.warning("OCR richiesto ma tesseract non utilizzabile: %s", exc)
+        logger.warning(
+            "OCR non disponibile: %s. Installa il binario Tesseract "
+            "(Windows: 'winget install UB-Mannheim.TesseractOCR' oppure "
+            "https://github.com/UB-Mannheim/tesseract/wiki) e assicurati che "
+            "'tesseract' sia nel PATH; per le lingue installa i language pack "
+            "(es. ita, eng). Variabile: PDF2TEX_OCR_LANG=%s",
+            exc,
+            settings.ocr_lang,
+        )
         _TESSERACT_OK = False
     return _TESSERACT_OK
 
@@ -168,7 +212,9 @@ class FigureInfo:
 
 
 class BaseExtractor:
-    def extract(self, pdf_path: Path, figures_dir: Path) -> ExtractedDocument:
+    def extract(
+        self, pdf_path: Path, figures_dir: Path, progress: ProgressCb = None
+    ) -> ExtractedDocument:
         raise NotImplementedError
 
     def extract_figures(self, pdf_path: Path, figures_dir: Path) -> list[FigureInfo]:
@@ -203,7 +249,9 @@ class PyMuPDFExtractor(BaseExtractor):
         logger.info("Estratte %d figure da %s", len(out), pdf_path.name)
         return out
 
-    def extract(self, pdf_path: Path, figures_dir: Path) -> ExtractedDocument:
+    def extract(
+        self, pdf_path: Path, figures_dir: Path, progress: ProgressCb = None
+    ) -> ExtractedDocument:
         import fitz  # PyMuPDF
 
         figures_dir.mkdir(parents=True, exist_ok=True)
@@ -218,6 +266,11 @@ class PyMuPDFExtractor(BaseExtractor):
         ocr_used = 0
 
         ocr_active = self.enable_ocr and tesseract_available()
+        _notify(
+            progress,
+            message=f"PyMuPDF: lettura di {pdf_path.name}",
+            detail=f"OCR {'attivo' if ocr_active else 'non attivo'}",
+        )
         for i, page in enumerate(doc, start=1):
             text = page.get_text("text").strip()
 
@@ -256,6 +309,12 @@ class PyMuPDFExtractor(BaseExtractor):
             len(pages),
             len(figures),
             ocr_used,
+        )
+        _notify(
+            progress,
+            message=f"PyMuPDF: {pdf_path.name} letto",
+            detail=f"{len(pages)} pagine, {len(figures)} figure, {ocr_used} via OCR",
+            level="success",
         )
         return ExtractedDocument(filename=pdf_path.name, pages=pages, figures=figures)
 
@@ -345,7 +404,7 @@ def _run_docling_chunk(slice_pdf: Path, timeout: int) -> str | None:
         return None
 
 
-def docling_markdown_chunked(pdf_path: Path) -> str | None:
+def docling_markdown_chunked(pdf_path: Path, progress: ProgressCb = None) -> str | None:
     """Convert a PDF to structured markdown via Docling, safely.
 
     Steps: cache lookup -> page-count guard -> slice into chunks -> isolated
@@ -361,6 +420,11 @@ def docling_markdown_chunked(pdf_path: Path) -> str | None:
     cache_path = _docling_cache_path(pdf_path)
     if settings.extraction_cache and cache_path.exists():
         logger.info("Docling: cache hit per %s", pdf_path.name)
+        _notify(
+            progress,
+            message=f"Docling: {pdf_path.name} da cache",
+            detail="testo strutturato riusato dalla cache",
+        )
         return cache_path.read_text(encoding="utf-8") or None
 
     import fitz  # PyMuPDF
@@ -374,6 +438,12 @@ def docling_markdown_chunked(pdf_path: Path) -> str | None:
             n_pages,
             settings.docling_max_pages,
         )
+        _notify(
+            progress,
+            message=f"Docling saltato per {pdf_path.name}",
+            detail=f"{n_pages} pagine oltre il limite di {settings.docling_max_pages}",
+            level="warning",
+        )
         return None
 
     chunk_size = max(1, settings.docling_chunk_pages)
@@ -384,6 +454,11 @@ def docling_markdown_chunked(pdf_path: Path) -> str | None:
         n_pages,
         n_chunks,
         chunk_size,
+    )
+    _notify(
+        progress,
+        message=f"Docling: {pdf_path.name} in {n_chunks} blocchi",
+        detail=f"{n_pages} pagine, {chunk_size} pagine per blocco (sottoprocessi isolati)",
     )
 
     parts: list[str] = []
@@ -405,13 +480,31 @@ def docling_markdown_chunked(pdf_path: Path) -> str | None:
             logger.info(
                 "Docling: chunk %d/%d (pagine %d-%d)", ci + 1, n_chunks, start + 1, end
             )
+            _notify(
+                progress,
+                message=f"Docling: blocco {ci + 1}/{n_chunks} di {pdf_path.name}",
+                detail=f"pagine {start + 1}-{end}",
+            )
             md = _run_docling_chunk(slice_pdf, settings.docling_subprocess_timeout)
             if md:
                 parts.append(md)
                 ok_chunks += 1
+            else:
+                _notify(
+                    progress,
+                    message=f"Docling: blocco {ci + 1}/{n_chunks} non riuscito",
+                    detail=f"{pdf_path.name} pagine {start + 1}-{end}",
+                    level="warning",
+                )
 
     if not parts:
         logger.warning("Docling: nessun chunk riuscito per %s", pdf_path.name)
+        _notify(
+            progress,
+            message=f"Docling fallito per {pdf_path.name}",
+            detail="uso il testo PyMuPDF",
+            level="warning",
+        )
         return None
 
     merged = "\n\n".join(parts).strip()
@@ -421,6 +514,12 @@ def docling_markdown_chunked(pdf_path: Path) -> str | None:
         ok_chunks,
         n_chunks,
         len(merged),
+    )
+    _notify(
+        progress,
+        message=f"Docling: {pdf_path.name} completato",
+        detail=f"{ok_chunks}/{n_chunks} blocchi, {len(merged)} caratteri",
+        level="success",
     )
     if settings.extraction_cache and merged:
         try:
@@ -433,8 +532,10 @@ def docling_markdown_chunked(pdf_path: Path) -> str | None:
 class DoclingExtractor(BaseExtractor):
     """Structured extraction via Docling (rich markdown, no embedded figures)."""
 
-    def extract(self, pdf_path: Path, figures_dir: Path) -> ExtractedDocument:
-        markdown = docling_markdown_chunked(pdf_path) or ""
+    def extract(
+        self, pdf_path: Path, figures_dir: Path, progress: ProgressCb = None
+    ) -> ExtractedDocument:
+        markdown = docling_markdown_chunked(pdf_path, progress) or ""
         pages = [PageContent(page=1, text=markdown, source="docling")]
         return ExtractedDocument(
             filename=pdf_path.name, pages=pages, rich_markdown=markdown or None
@@ -454,8 +555,10 @@ class HybridExtractor(BaseExtractor):
     def __init__(self, render_dpi: int = 130, enable_ocr: bool = True) -> None:
         self._py = PyMuPDFExtractor(render_dpi=render_dpi, enable_ocr=enable_ocr)
 
-    def extract(self, pdf_path: Path, figures_dir: Path) -> ExtractedDocument:
-        doc = self._py.extract(pdf_path, figures_dir)
+    def extract(
+        self, pdf_path: Path, figures_dir: Path, progress: ProgressCb = None
+    ) -> ExtractedDocument:
+        doc = self._py.extract(pdf_path, figures_dir, progress)
 
         # Remove running headers/footers from the per-page text (improves both
         # the PyMuPDF fallback and any downstream analysis).
@@ -464,7 +567,7 @@ class HybridExtractor(BaseExtractor):
             for page, text in zip(doc.pages, cleaned):
                 page.text = text
 
-        rich = docling_markdown_chunked(pdf_path)
+        rich = docling_markdown_chunked(pdf_path, progress)
         if rich:
             doc.rich_markdown = rich
         else:
@@ -504,14 +607,21 @@ def extract_figures(pdf_path: Path, figures_dir: Path) -> list[FigureInfo]:
 
 
 def available_backends() -> dict[str, bool]:
-    """Report which extractor backends/capabilities are available."""
+    """Report which extractor backends/capabilities are available.
+
+    ``ocr`` reflects whether the **tesseract binary** is actually callable, not
+    merely whether the ``pytesseract`` wrapper is importable — otherwise the UI
+    would offer OCR that then silently does nothing at extraction time.
+    """
     import importlib.util
 
     has_docling = importlib.util.find_spec("docling") is not None
+    has_pytesseract = importlib.util.find_spec("pytesseract") is not None
     return {
         # Hybrid always works (it degrades to PyMuPDF when Docling is absent).
         "hybrid": True,
         "pymupdf": importlib.util.find_spec("fitz") is not None,
         "docling": has_docling,
-        "ocr": importlib.util.find_spec("pytesseract") is not None,
+        # True only if the tesseract executable is on PATH and runnable.
+        "ocr": has_pytesseract and tesseract_available(),
     }

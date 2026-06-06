@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -126,18 +127,32 @@ async def run_generation(
                 bool(project.enable_ocr),
             )
             documents: list[dict[str, Any]] = []
+            loop = asyncio.get_running_loop()
             for si, src in enumerate(ordered_sources, start=1):
+                base_progress = 2 + int(3 * si / max(1, n_src))
                 await manager.emit(
                     project_id,
                     {
                         "stage": "extracting",
                         "message": f"Estrazione {src.filename} ({si}/{n_src})",
-                        "progress": 2 + int(3 * si / max(1, n_src)),
+                        "progress": base_progress,
                         "detail": f"documento {si} di {n_src}",
                     },
                 )
+
+                # Bridge the (synchronous) extractor's progress callbacks back
+                # onto the event loop so Docling chunk milestones stream live to
+                # the UI while extraction runs off-thread (keeps the loop free).
+                def _progress_cb(event: dict, _base: int = base_progress) -> None:
+                    event.setdefault("progress", _base)
+                    asyncio.run_coroutine_threadsafe(
+                        manager.emit(project_id, event), loop
+                    )
+
                 try:
-                    doc = extractor.extract(Path(src.path), figures_dir)
+                    doc = await asyncio.to_thread(
+                        extractor.extract, Path(src.path), figures_dir, _progress_cb
+                    )
                 except Exception as exc:  # noqa: BLE001 - skip a broken file, keep going
                     logger.exception("Estrazione fallita per %s: %s", src.filename, exc)
                     await manager.emit(

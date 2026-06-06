@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -126,6 +127,92 @@ def assemble_document(
         + "\n"
         + POSTAMBLE
     )
+
+
+def slugify_title(title: str, fallback: str = "documento") -> str:
+    """Turn a document title into a safe filename stem (no extension)."""
+    slug = re.sub(r"[^\w\s-]", "", (title or "").strip().lower(), flags=re.UNICODE)
+    slug = re.sub(r"[\s_-]+", "-", slug).strip("-")
+    return slug[:80] or fallback
+
+
+def _split_header_and_body(full_latex: str) -> tuple[str, str, str]:
+    """Split a full document into (header, body, footer).
+
+    header = everything up to and including ``\\begin{document}`` plus the
+    front-matter (title page / abstract / table of contents); body = the actual
+    chapters/sections; footer = ``\\end{document}``. Falls back gracefully if
+    the markers are missing.
+    """
+    begin = full_latex.find(r"\begin{document}")
+    end = full_latex.rfind(r"\end{document}")
+    if begin == -1 or end == -1:
+        return full_latex, "", ""
+    begin += len(r"\begin{document}")
+    inner = full_latex[begin:end]
+    footer = r"\end{document}"
+    # Keep front matter (title/abstract/toc) in the header so parts contain only
+    # real content. The first \chapter (or \section) marks the body start.
+    m = re.search(r"\\chapter\{|\\section\{", inner)
+    if not m:
+        return full_latex[:begin], inner, footer
+    header = full_latex[:begin] + inner[: m.start()]
+    body = inner[m.start() :]
+    return header, body, footer
+
+
+def split_into_part_files(full_latex: str) -> tuple[str, dict[str, str]]:
+    """Build a modular project from a monolithic document.
+
+    Returns ``(main_tex, parts)`` where ``main_tex`` keeps the preamble, title
+    page and table of contents and then ``\\input{parts/<name>}`` for each
+    chapter, and ``parts`` maps ``parts/<name>.tex`` -> chapter content. If the
+    document has no chapters, a single ``parts/part-01.tex`` is produced. The
+    assembled ``main_tex`` is equivalent to the input and still compiles.
+    """
+    header, body, footer = _split_header_and_body(full_latex)
+    if not body.strip():
+        # Nothing to split: keep a single part so the zip stays modular.
+        parts = {"parts/part-01.tex": full_latex}
+        return full_latex, parts
+
+    # Split on top-level \chapter{...} boundaries, keeping the command.
+    chunks = re.split(r"(?=\\chapter\{)", body)
+    chunks = [c for c in chunks if c.strip()]
+    if not chunks:
+        chunks = [body]
+
+    parts: dict[str, str] = {}
+    inputs: list[str] = []
+    for i, chunk in enumerate(chunks, start=1):
+        title_match = re.search(r"\\chapter\{([^}]*)\}", chunk)
+        stem = slugify_title(title_match.group(1) if title_match else f"part-{i:02d}")
+        name = f"part-{i:02d}-{stem}"[:60]
+        rel = f"parts/{name}.tex"
+        parts[rel] = chunk.strip() + "\n"
+        inputs.append(f"\\input{{parts/{name}}}")
+
+    main_tex = header.rstrip() + "\n\n" + "\n".join(inputs) + "\n\n" + footer + "\n"
+    return main_tex, parts
+
+
+def build_project_zip(
+    zip_path: Path,
+    main_tex: str,
+    parts: dict[str, str],
+    figures_dir: Path | None = None,
+) -> Path:
+    """Write a self-contained LaTeX project zip: main.tex + parts/ + figures/."""
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("main.tex", main_tex)
+        for rel, content in parts.items():
+            zf.writestr(rel, content)
+        if figures_dir and figures_dir.exists():
+            for fig in sorted(figures_dir.iterdir()):
+                if fig.is_file():
+                    zf.write(fig, f"figures/{fig.name}")
+    return zip_path
 
 
 _INCLUDE_RE = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}")

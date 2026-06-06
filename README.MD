@@ -21,24 +21,31 @@ flowchart TD
         P["Plan<br/>struttura globale"]
         W["Write<br/>fan-out parallelo per sezione"]
         R["Review + pdflatex<br/>loop di retry"]
-        A --> P --> W --> R
+        J["Judge<br/>valuta la struttura"]
+        A --> P --> W --> R --> J
+        J -->|"revisione struttura"| R
     end
 
     UI <-->|"WebSocket / REST"| API
     API --> EXTRACT
     EXTRACT --> PIPELINE
     API <--> DB
-    R -->|"documento LaTeX + PDF"| API
+    J -->|"documento LaTeX + PDF"| API
 ```
 
 ### Agenti
 
-| Agente   | Ruolo                                                                 |
-| -------- | --------------------------------------------------------------------- |
-| Analyzer | Analizza ogni PDF (riassunto, argomenti, formule, figure) — parallelo |
-| Planner  | Unisce le analisi + il prompt utente in una struttura globale         |
-| Writer   | Scrive il LaTeX di ogni sezione — parallelo                           |
-| Reviewer | Corregge errori di compilazione e incoerenze (loop con pdflatex)      |
+| Agente   | Ruolo                                                                     |
+| -------- | ------------------------------------------------------------------------- |
+| Analyzer | Analizza ogni PDF (riassunto, argomenti, formule, figure) — parallelo     |
+| Planner  | Unisce le analisi + il prompt utente in una struttura globale             |
+| Writer   | Scrive il LaTeX di ogni sezione — parallelo                               |
+| Reviewer | Corregge errori di compilazione e incoerenze (loop con pdflatex)          |
+| Judge    | Valuta la struttura complessiva del PDF e richiede una revisione se serve |
+
+I download usano il **titolo del progetto** come nome file: il PDF è
+`<titolo>.pdf` e il sorgente LaTeX è un **archivio ZIP** `<titolo>.zip` con
+`main.tex` e i singoli capitoli nella cartella `parts/` (più le figure).
 
 ## Avvio rapido (sviluppo)
 
@@ -50,6 +57,11 @@ uv sync
 copy .env.example .env   # imposta PDF2TEX_ENCRYPTION_KEY
 uv run python -m app.main
 ```
+
+> Con hot reload usa `uv run uvicorn app.main:app --reload --reload-dir app`:
+> limitando il watch alla cartella `app` si evita che le scritture in
+> `storage/` (figure, log, cache Docling) provochino continui riavvii
+> (`watchfiles ... changes detected`).
 
 ### Frontend
 

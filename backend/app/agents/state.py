@@ -60,5 +60,12 @@ class GraphState(TypedDict, total=False):
     pdf_path: str | None
     compile_log: str
 
+    # Judge stage: structural verdict + revision bookkeeping
+    judge_rounds: int
+    judge_action: str  # "approve" | "revise" | "skip" | "stop"
+    judge_score: int
+    good_latex: str  # last version that compiled (rollback target)
+    good_pdf: str | None
+
     # Progress callback (not serialized, passed through)
     progress: ProgressCb

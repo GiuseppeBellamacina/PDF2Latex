@@ -50,7 +50,7 @@ export interface Section {
 }
 
 export interface Project {
-  id: number;
+  id: string;
   name: string;
   user_prompt: string | null;
   language: string;
@@ -97,7 +97,7 @@ export interface Backends {
 }
 
 export interface ProjectSummary {
-  id: number;
+  id: string;
   name: string;
   status: string;
   language: string;
@@ -150,25 +150,25 @@ export const api = {
 
   // Projects
   listProjects: () => req<ProjectSummary[]>("/projects"),
-  getProject: (id: number) => req<Project>(`/projects/${id}`),
-  updateProject: (id: number, data: ProjectUpdate) =>
+  getProject: (id: string) => req<Project>(`/projects/${id}`),
+  updateProject: (id: string, data: ProjectUpdate) =>
     req<Project>(`/projects/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     }),
-  deleteProject: (id: number) =>
+  deleteProject: (id: string) =>
     req<{ ok: boolean }>(`/projects/${id}`, { method: "DELETE" }),
   createProject: (form: FormData) =>
     req<Project>("/projects", { method: "POST", body: form }),
-  previewLatex: (id: number) =>
+  previewLatex: (id: string) =>
     req<{ latex: string }>(`/projects/${id}/preview`),
   backends: () => req<Backends>("/backends"),
 
-  figureUrl: (projectId: number, relPath: string) => {
+  figureUrl: (projectId: string, relPath: string) => {
     const file = relPath.split("/").pop() ?? relPath;
     return `${BASE}/projects/${projectId}/figures/${file}`;
   },
-  downloadUrl: (id: number, kind: "tex" | "pdf") =>
+  downloadUrl: (id: string, kind: "tex" | "pdf") =>
     `${BASE}/projects/${id}/download/${kind}`,
 };

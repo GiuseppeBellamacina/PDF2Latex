@@ -5,6 +5,8 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent  # backend/
+STORAGE_DIR = BASE_DIR / "storage"
+STORAGE_DIR.mkdir(exist_ok=True)  # ensure storage dir exists for logs, DB
 
 
 class Settings(BaseSettings):
@@ -15,11 +17,11 @@ class Settings(BaseSettings):
     port: int = 8000
 
     # Storage paths
-    data_dir: Path = BASE_DIR / "storage"
-    uploads_dir: Path = BASE_DIR / "storage" / "uploads"
-    output_dir: Path = BASE_DIR / "storage" / "output"
-    cache_dir: Path = BASE_DIR / "storage" / "cache"
-    db_path: Path = BASE_DIR / "storage" / "app.db"
+    data_dir: Path = STORAGE_DIR
+    uploads_dir: Path = STORAGE_DIR / "uploads"
+    output_dir: Path = STORAGE_DIR / "output"
+    cache_dir: Path = STORAGE_DIR / "cache"
+    db_path: Path = STORAGE_DIR / "app.db"
 
     # Encryption key for API keys stored in DB
     encryption_key: str = ""
@@ -60,10 +62,38 @@ class Settings(BaseSettings):
     planner_temperature: float = 0.1
     writer_temperature: float = 0.3
     reviewer_temperature: float = 0.0
+    judge_temperature: float = 0.0
     # Char budgets (per chunk / per section) to avoid silent truncation.
     analyzer_chunk_chars: int = 16000  # map-reduce chunk size for long docs
     analyzer_max_chunks: int = 12  # safety cap on chunks per document
     writer_source_chars: int = 14000  # relevance-selected source budget
+
+    # Judge: after a successful compile, an LLM "judge" inspects the overall
+    # document structure (intro/conclusion, chapter order, balance, duplicates,
+    # figure placement) and, if needed, requests a structural revision that is
+    # re-linted and re-compiled. Bounded iterations keep cost/time in check.
+    judge_enabled: bool = True
+    judge_max_iterations: int = 1  # structural revision rounds after first PDF
+    # Deterministic layout inspection (no LLM, no multimodal): measures the
+    # compiled PDF (oversized/clustered figures, near-empty pages) and parses
+    # the pdflatex log (overfull/underfull boxes) to give the text judge concrete
+    # facts about layout/figure problems. This is the default critique source.
+    judge_layout_inspect: bool = True
+    # Vision judge (OPTIONAL, OFF by default): render the compiled PDF pages and
+    # let a *vision-capable* model review them. Requires a multimodal model
+    # (e.g. gpt-4o, claude-3.5). Leave disabled if you don't have one — the
+    # layout inspector above already feeds figure/layout issues to the judge.
+    judge_vision: bool = False
+    judge_vision_max_pages: int = 12  # cap pages sent to the vision model
+    judge_vision_dpi: int = 110  # render DPI for the judged page images
+
+    # Figures
+    # Each mandatory figure is placed in exactly ONE section (distributed across
+    # the sections that use its source), and no image is ever inserted twice in
+    # the whole document. These caps keep slide decks from flooding a section.
+    max_figures_per_section: int = 4  # hard cap of figures rendered per section
+    figure_width_ratio: float = 0.62  # \includegraphics width as fraction of line
+    figure_max_height_ratio: float = 0.42  # cap height as fraction of \textheight
 
     # Defaults
     default_language: str = "italian"

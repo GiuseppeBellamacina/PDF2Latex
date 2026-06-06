@@ -11,6 +11,7 @@ export interface ProgressEvent {
   pdf?: boolean;
   level?: "info" | "warning" | "error" | "success";
   detail?: string;
+  judge_score?: number;
   tokens?: {
     calls: number;
     input_tokens: number;
@@ -19,7 +20,7 @@ export interface ProgressEvent {
   };
 }
 
-export function useGenerateWs(projectId: number) {
+export function useGenerateWs(projectId: string) {
   const [events, setEvents] = useState<ProgressEvent[]>([]);
   const [latest, setLatest] = useState<ProgressEvent | null>(null);
   const [running, setRunning] = useState(false);

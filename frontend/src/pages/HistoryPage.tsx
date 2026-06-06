@@ -12,7 +12,7 @@ export default function HistoryPage() {
     loadProjects();
   }, [loadProjects]);
 
-  async function remove(id: number) {
+  async function remove(id: string) {
     await api.deleteProject(id);
     loadProjects();
   }

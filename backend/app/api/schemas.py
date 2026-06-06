@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # --------------------------- Providers ------------------------------------- #
@@ -108,7 +108,11 @@ class ProjectUpdate(BaseModel):
 
 
 class ProjectOut(BaseModel):
-    id: int
+    # ``id`` is the opaque public identifier (read from the ORM ``public_id``),
+    # so the sequential integer primary key is never exposed in the API/URLs.
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str = Field(validation_alias="public_id")
     name: str
     user_prompt: str | None
     language: str
@@ -131,17 +135,13 @@ class ProjectOut(BaseModel):
     sections: list[SectionOut] = []
     figures: list[FigureOut] = []
 
-    class Config:
-        from_attributes = True
-
 
 class ProjectSummary(BaseModel):
-    id: int
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    id: str = Field(validation_alias="public_id")
     name: str
     status: str
     language: str
     total_sources: int
     created_at: datetime
-
-    class Config:
-        from_attributes = True

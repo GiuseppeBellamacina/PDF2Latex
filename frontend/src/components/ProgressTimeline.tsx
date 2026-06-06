@@ -1,14 +1,24 @@
-import { Check } from "lucide-react";
+import {
+  Check,
+  FileSearch,
+  Gavel,
+  ListTree,
+  Loader2,
+  PencilLine,
+  ScanText,
+  Wrench,
+} from "lucide-react";
 import { type ProgressEvent } from "../hooks/useGenerateWs";
 import { cn } from "../lib/utils";
 
 const STAGES = [
-  { key: "extracting", label: "Extraction" },
-  { key: "analyzing", label: "Analysis" },
-  { key: "planning", label: "Planning" },
-  { key: "writing", label: "Writing" },
-  { key: "reviewing", label: "Review" },
-  { key: "done", label: "Completed" },
+  { key: "extracting", label: "Extraction", icon: ScanText },
+  { key: "analyzing", label: "Analysis", icon: FileSearch },
+  { key: "planning", label: "Planning", icon: ListTree },
+  { key: "writing", label: "Writing", icon: PencilLine },
+  { key: "reviewing", label: "Review", icon: Wrench },
+  { key: "judging", label: "Judge", icon: Gavel },
+  { key: "done", label: "Completed", icon: Check },
 ];
 
 interface Props {
@@ -27,8 +37,13 @@ export default function ProgressTimeline({ events, latest }: Props) {
     <div className="space-y-5">
       <div>
         <div className="mb-2 flex items-center justify-between text-xs text-ink-500">
-          <span>{latest?.message ?? "Waiting…"}</span>
-          <span>{progress}%</span>
+          <span className="flex items-center gap-1.5">
+            {!completed && !failed && currentIdx >= 0 && (
+              <Loader2 size={12} className="animate-spin text-ink-400" />
+            )}
+            {latest?.message ?? "Waiting…"}
+          </span>
+          <span className="tabular-nums">{progress}%</span>
         </div>
         <div className="h-2 overflow-hidden rounded-full bg-ink-200 dark:bg-ink-800">
           <div
@@ -45,29 +60,34 @@ export default function ProgressTimeline({ events, latest }: Props) {
         </div>
       </div>
 
-      <ol className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+      <ol className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {STAGES.map((s, i) => {
           const active = i === currentIdx && !completed;
-          const done = currentIdx > i || completed;
+          const done = (currentIdx > i && currentIdx >= 0) || completed;
+          const Icon = s.icon;
           return (
             <li
               key={s.key}
               className={cn(
-                "flex items-center justify-between rounded-lg border px-3 py-2 text-xs transition-colors",
+                "flex items-center gap-2 rounded-lg border px-3 py-2 text-xs transition-colors",
                 done
                   ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
                   : active
-                    ? "border-ink-500 text-ink-900 dark:text-ink-100"
+                    ? "border-ink-500 bg-ink-100 text-ink-900 dark:bg-ink-800/40 dark:text-ink-100"
                     : "border-ink-200 text-ink-400 dark:border-ink-800",
               )}
             >
-              <span>{s.label}</span>
-              {done && (
+              {active ? (
+                <Loader2 size={14} className="shrink-0 animate-spin" />
+              ) : done ? (
                 <Check
                   size={14}
-                  className="text-emerald-600 dark:text-emerald-400"
+                  className="shrink-0 text-emerald-600 dark:text-emerald-400"
                 />
+              ) : (
+                <Icon size={14} className="shrink-0" />
               )}
+              <span className="truncate">{s.label}</span>
             </li>
           );
         })}

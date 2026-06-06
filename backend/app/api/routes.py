@@ -25,6 +25,7 @@ from app.core.llm_factory import LLMConfig, test_llm_connection
 from app.db.database import get_db
 from app.db.models import Figure, Project, ProjectStatus, ProviderConfig, Source
 from app.services.extractor import available_backends, extract_figures
+from app.services.latex import build_project_zip, slugify_title, split_into_part_files
 
 router = APIRouter()
 
@@ -193,13 +194,21 @@ async def create_project(
     return await _get_project_full(db, project.id)
 
 
-@router.patch("/projects/{project_id}", response_model=ProjectOut)
-async def update_project(
-    project_id: int, payload: ProjectUpdate, db: AsyncSession = Depends(get_db)
-):
-    project = await db.get(Project, project_id)
+async def _project_by_key(db: AsyncSession, key: str) -> Project:
+    """Resolve a project by its opaque public identifier (404 if missing)."""
+    result = await db.execute(select(Project).where(Project.public_id == key))
+    project = result.scalar_one_or_none()
     if project is None:
         raise HTTPException(404, "Progetto non trovato")
+    return project
+
+
+@router.patch("/projects/{project_key}", response_model=ProjectOut)
+async def update_project(
+    project_key: str, payload: ProjectUpdate, db: AsyncSession = Depends(get_db)
+):
+    project = await _project_by_key(db, project_key)
+    project_id = project.id
 
     data = payload.model_dump(exclude_unset=True)
     source_order = data.pop("source_order", None)
@@ -234,11 +243,14 @@ async def update_project(
     return project
 
 
-@router.get("/projects/{project_id}/figures/{filename}")
-async def get_figure(project_id: int, filename: str):
+@router.get("/projects/{project_key}/figures/{filename}")
+async def get_figure(
+    project_key: str, filename: str, db: AsyncSession = Depends(get_db)
+):
     """Serve an extracted figure image by filename."""
+    project = await _project_by_key(db, project_key)
     safe = Path(filename).name
-    path = settings.uploads_dir / f"project_{project_id}" / "figures" / safe
+    path = settings.uploads_dir / f"project_{project.id}" / "figures" / safe
     if not path.exists():
         raise HTTPException(404, "Figura non trovata")
     return FileResponse(path, media_type="image/png")
@@ -254,28 +266,27 @@ async def list_projects(db: AsyncSession = Depends(get_db)):
     return rows
 
 
-@router.get("/projects/{project_id}", response_model=ProjectOut)
-async def get_project(project_id: int, db: AsyncSession = Depends(get_db)):
-    project = await _get_project_full(db, project_id)
-    if project is None:
+@router.get("/projects/{project_key}", response_model=ProjectOut)
+async def get_project(project_key: str, db: AsyncSession = Depends(get_db)):
+    project = await _project_by_key(db, project_key)
+    full = await _get_project_full(db, project.id)
+    if full is None:
         raise HTTPException(404, "Progetto non trovato")
-    return project
+    return full
 
 
-@router.delete("/projects/{project_id}")
-async def delete_project(project_id: int, db: AsyncSession = Depends(get_db)):
-    project = await db.get(Project, project_id)
-    if project is None:
-        raise HTTPException(404, "Progetto non trovato")
+@router.delete("/projects/{project_key}")
+async def delete_project(project_key: str, db: AsyncSession = Depends(get_db)):
+    project = await _project_by_key(db, project_key)
     await db.delete(project)
     await db.commit()
     return {"ok": True}
 
 
-@router.get("/projects/{project_id}/preview")
-async def preview_latex(project_id: int, db: AsyncSession = Depends(get_db)):
-    project = await db.get(Project, project_id)
-    if project is None or not project.output_tex_path:
+@router.get("/projects/{project_key}/preview")
+async def preview_latex(project_key: str, db: AsyncSession = Depends(get_db)):
+    project = await _project_by_key(db, project_key)
+    if not project.output_tex_path:
         raise HTTPException(404, "Documento non disponibile")
     path = Path(project.output_tex_path)
     if not path.exists():
@@ -283,19 +294,36 @@ async def preview_latex(project_id: int, db: AsyncSession = Depends(get_db)):
     return {"latex": path.read_text(encoding="utf-8")}
 
 
-@router.get("/projects/{project_id}/download/{kind}")
-async def download(project_id: int, kind: str, db: AsyncSession = Depends(get_db)):
-    project = await db.get(Project, project_id)
-    if project is None:
-        raise HTTPException(404, "Progetto non trovato")
-    path_str = project.output_tex_path if kind == "tex" else project.output_pdf_path
-    if not path_str:
-        raise HTTPException(404, "File non disponibile")
-    path = Path(path_str)
-    if not path.exists():
-        raise HTTPException(404, "File mancante")
-    media = "application/pdf" if kind == "pdf" else "application/x-tex"
-    return FileResponse(path, media_type=media, filename=path.name)
+@router.get("/projects/{project_key}/download/{kind}")
+async def download(project_key: str, kind: str, db: AsyncSession = Depends(get_db)):
+    project = await _project_by_key(db, project_key)
+    slug = slugify_title(project.name)
+
+    if kind == "pdf":
+        if not project.output_pdf_path:
+            raise HTTPException(404, "File non disponibile")
+        path = Path(project.output_pdf_path)
+        if not path.exists():
+            raise HTTPException(404, "File mancante")
+        return FileResponse(path, media_type="application/pdf", filename=f"{slug}.pdf")
+
+    if kind == "tex":
+        # The LaTeX download is a self-contained zip: main.tex + parts/ + figures.
+        if not project.output_tex_path:
+            raise HTTPException(404, "File non disponibile")
+        main_path = Path(project.output_tex_path)
+        if not main_path.exists():
+            raise HTTPException(404, "File mancante")
+        work_dir = main_path.parent
+        full_latex = main_path.read_text(encoding="utf-8")
+        main_tex, parts = split_into_part_files(full_latex)
+        zip_path = work_dir / f"{slug}.zip"
+        build_project_zip(zip_path, main_tex, parts, work_dir / "figures")
+        return FileResponse(
+            zip_path, media_type="application/zip", filename=f"{slug}.zip"
+        )
+
+    raise HTTPException(404, "Tipo di download non valido")
 
 
 async def _get_project_full(db: AsyncSession, project_id: int) -> Project | None:

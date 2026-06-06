@@ -1,4 +1,10 @@
-import { Download, ExternalLink, FileCode, Play, Square } from "lucide-react";
+import {
+  Download,
+  ExternalLink,
+  FileArchive,
+  Play,
+  Square,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import ProgressTimeline from "../components/ProgressTimeline";
@@ -8,7 +14,7 @@ import { useAppStore } from "../stores/appStore";
 
 export default function GeneratePage() {
   const { projectId } = useParams();
-  const id = Number(projectId);
+  const id = projectId ?? "";
 
   const { providers, selectedProviderId, loadProviders, setSelectedProvider } =
     useAppStore();
@@ -94,7 +100,7 @@ export default function GeneratePage() {
             </h2>
             <div className="flex gap-2">
               <a className="btn-ghost" href={api.downloadUrl(id, "tex")}>
-                <FileCode size={16} /> .tex
+                <FileArchive size={16} /> LaTeX (.zip)
               </a>
               <a className="btn-ghost" href={api.downloadUrl(id, "pdf")}>
                 <Download size={16} /> PDF

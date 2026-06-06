@@ -1,14 +1,8 @@
-import {
-  ArrowDown,
-  ArrowRight,
-  ArrowUp,
-  CheckCircle2,
-  ImageIcon,
-  Loader2,
-} from "lucide-react";
+import { ArrowRight, CheckCircle2, ImageIcon, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import Checkbox from "../components/Checkbox";
+import SourceReorder from "../components/SourceReorder";
 import {
   api,
   type Backends,
@@ -20,7 +14,7 @@ import { LANGUAGES } from "../lib/languages";
 
 export default function ConfigurePage() {
   const { projectId } = useParams();
-  const id = Number(projectId);
+  const id = projectId ?? "";
   const navigate = useNavigate();
 
   const [project, setProject] = useState<Project | null>(null);
@@ -82,16 +76,6 @@ export default function ConfigurePage() {
       list.sort((a, b) => a.order_index - b.order_index);
     return map;
   }, [project]);
-
-  function moveSource(index: number, dir: -1 | 1) {
-    setOrderedSources((prev) => {
-      const next = [...prev];
-      const target = index + dir;
-      if (target < 0 || target >= next.length) return prev;
-      [next[index], next[target]] = [next[target], next[index]];
-      return next;
-    });
-  }
 
   function toggleMandatory(figId: number) {
     setMandatoryIds((prev) => {
@@ -271,43 +255,10 @@ export default function ConfigurePage() {
           PDF extraction order
         </h2>
         <p className="text-xs text-ink-500">
-          The order below determines the sequence in which contents are merged
-          into the final document.
+          Drag the rows to reorder. The order below determines the sequence in
+          which contents are merged into the final document.
         </p>
-        <ul className="space-y-2">
-          {orderedSources.map((s, i) => (
-            <li
-              key={s.id}
-              className="flex items-center gap-3 rounded-lg border border-ink-800/60 bg-ink-900/40 px-3 py-2"
-            >
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-ink-800 text-xs font-medium">
-                {i + 1}
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium">{s.filename}</p>
-                <p className="text-xs text-ink-500">{s.n_pages} pages</p>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  className="btn-ghost px-2"
-                  disabled={i === 0}
-                  onClick={() => moveSource(i, -1)}
-                  title="Move up"
-                >
-                  <ArrowUp size={16} />
-                </button>
-                <button
-                  className="btn-ghost px-2"
-                  disabled={i === orderedSources.length - 1}
-                  onClick={() => moveSource(i, 1)}
-                  title="Move down"
-                >
-                  <ArrowDown size={16} />
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
+        <SourceReorder sources={orderedSources} onReorder={setOrderedSources} />
       </section>
 
       {/* Extraction / OCR */}

@@ -1,6 +1,7 @@
 """SQLAlchemy ORM models for the PDF -> LaTeX generator."""
 
 import enum
+import uuid
 from datetime import datetime
 
 from sqlalchemy import (
@@ -47,6 +48,15 @@ class Project(Base):
     __tablename__ = "projects"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    # Opaque public identifier used in URLs (so the API never exposes the
+    # sequential integer primary key). Generated once at creation.
+    public_id = Column(
+        String(32),
+        unique=True,
+        index=True,
+        nullable=False,
+        default=lambda: uuid.uuid4().hex,
+    )
     name = Column(String(255), nullable=False)
     user_prompt = Column(Text, nullable=True)
     language = Column(String(50), nullable=False, default="italian")

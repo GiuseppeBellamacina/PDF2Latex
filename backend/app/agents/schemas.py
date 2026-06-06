@@ -42,3 +42,22 @@ class PlanSchema(BaseModel):
 
     title: str = Field(default="Documento Generato")
     sections: list[PlannedSectionSchema] = Field(default_factory=list)
+
+
+class JudgeSchema(BaseModel):
+    """Structural verdict on the assembled document produced by the judge."""
+
+    approved: bool = Field(
+        default=True,
+        description="True se la struttura complessiva è adeguata e non servono modifiche",
+    )
+    score: int = Field(
+        default=0, description="Qualità strutturale complessiva da 0 a 100"
+    )
+    issues: list[str] = Field(
+        default_factory=list,
+        description="Problemi strutturali concreti da correggere (vuoto se approvato)",
+    )
+    summary: str = Field(
+        default="", description="Breve giudizio sulla struttura del documento"
+    )
