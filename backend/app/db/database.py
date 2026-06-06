@@ -31,11 +31,20 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "structure_hint": "TEXT",
         "extractor_backend": "VARCHAR(50)",
         "enable_ocr": "BOOLEAN DEFAULT 0",
+        "judge_vision": "BOOLEAN DEFAULT 0",
+        "overview_latex": "TEXT",
+        "bibliography_bib": "TEXT",
+        "references_pool": "JSON",
+        "main_tex_override": "TEXT",
     },
     "figures": {
         "caption": "TEXT",
         "score": "FLOAT DEFAULT 0",
         "suggested": "BOOLEAN DEFAULT 0",
+    },
+    "sections": {
+        "source_filenames": "JSON",
+        "previous_latex": "TEXT",
     },
 }
 

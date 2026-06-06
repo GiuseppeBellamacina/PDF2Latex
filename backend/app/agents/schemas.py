@@ -13,6 +13,17 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class ReferenceSchema(BaseModel):
+    """A single bibliographic reference parsed from a source document."""
+
+    authors: str = Field(default="", description="Autori (cognomi separati da 'and')")
+    title: str = Field(default="", description="Titolo dell'opera citata")
+    year: str = Field(default="", description="Anno di pubblicazione")
+    venue: str = Field(
+        default="", description="Rivista/conferenza/editore, se disponibile"
+    )
+
+
 class AnalysisSchema(BaseModel):
     """Structured analysis of a single source document (or chunk)."""
 
@@ -26,6 +37,10 @@ class AnalysisSchema(BaseModel):
     )
     keywords: list[str] = Field(
         default_factory=list, description="Parole chiave per il recupero del contesto"
+    )
+    references: list[ReferenceSchema] = Field(
+        default_factory=list,
+        description="Riferimenti bibliografici realmente presenti nel documento",
     )
 
 
@@ -42,6 +57,19 @@ class PlanSchema(BaseModel):
 
     title: str = Field(default="Documento Generato")
     sections: list[PlannedSectionSchema] = Field(default_factory=list)
+
+
+class ChapterSynopsisSchema(BaseModel):
+    """A 2-3 sentence synopsis of a single chapter for the overview page."""
+
+    part_title: str = Field(default="", description="Titolo del capitolo")
+    synopsis: str = Field(default="", description="Sintesi di 2-3 frasi del capitolo")
+
+
+class OverviewSchema(BaseModel):
+    """Per-chapter synopses used to build the document's overview page."""
+
+    chapters: list[ChapterSynopsisSchema] = Field(default_factory=list)
 
 
 class JudgeSchema(BaseModel):

@@ -179,13 +179,16 @@ async def judge_structure(
     llm_config: dict[str, Any],
     pdf_path: str | None = None,
     compile_log: str | None = None,
+    use_vision: bool | None = None,
 ) -> JudgeSchema:
     """Return a critical verdict on the compiled document.
 
     Uses a deterministic layout report (figure sizing/placement, overflow, blank
     pages) by default; optionally also shows the rendered pages to a vision
     model when one is configured. Both feed concrete, actionable issues.
+    ``use_vision`` overrides the global ``judge_vision`` setting for this run.
     """
+    vision_enabled = settings.judge_vision if use_vision is None else use_vision
     layout_issues: list[str] = []
     if settings.judge_layout_inspect:
         layout_issues = _inspect_layout(pdf_path, compile_log)
@@ -202,7 +205,7 @@ async def judge_structure(
         )
 
     # Optional vision review of the actual rendered pages.
-    if settings.judge_vision and pdf_path and Path(pdf_path).exists():
+    if vision_enabled and pdf_path and Path(pdf_path).exists():
         with tempfile.TemporaryDirectory(prefix="judge_") as tmp:
             images = _render_pdf_pages(Path(pdf_path), Path(tmp))
             if images:

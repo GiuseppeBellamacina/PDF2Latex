@@ -34,6 +34,7 @@ export default function ConfigurePage() {
   const [language, setLanguage] = useState("english");
   const [backend, setBackend] = useState("pymupdf");
   const [enableOcr, setEnableOcr] = useState(false);
+  const [judgeVision, setJudgeVision] = useState(false);
   const [orderedSources, setOrderedSources] = useState<Source[]>([]);
   const [mandatoryIds, setMandatoryIds] = useState<Set<number>>(new Set());
 
@@ -52,6 +53,7 @@ export default function ConfigurePage() {
         setLanguage(p.language ?? "english");
         setBackend(p.extractor_backend ?? "pymupdf");
         setEnableOcr(!!p.enable_ocr);
+        setJudgeVision(!!p.judge_vision);
         setOrderedSources(
           [...p.sources].sort((a, b) => a.order_index - b.order_index),
         );
@@ -108,6 +110,7 @@ export default function ConfigurePage() {
         structure_hint: structureHint,
         extractor_backend: backend,
         enable_ocr: enableOcr,
+        judge_vision: judgeVision,
         source_order: orderedSources.map((s) => s.id),
         mandatory_figure_ids: [...mandatoryIds],
       });
@@ -314,6 +317,19 @@ export default function ConfigurePage() {
               {backends && !backends.ocr ? (
                 <span className="text-ink-500"> — Tesseract not installed</span>
               ) : null}
+            </>
+          }
+        />
+        <Checkbox
+          checked={judgeVision}
+          onChange={setJudgeVision}
+          label={
+            <>
+              Visual judge — review the rendered PDF pages with a vision model
+              <span className="text-ink-500">
+                {" "}
+                (requires a multimodal provider, e.g. GPT-4o; slower)
+              </span>
             </>
           }
         />

@@ -83,9 +83,44 @@ class SectionOut(BaseModel):
     order_index: int
     status: str
     latex: str | None
+    has_undo: bool = False
+    has_source: bool = False
 
     class Config:
         from_attributes = True
+
+
+class SectionRefineRequest(BaseModel):
+    """A quick post-generation fix instruction for a single section."""
+
+    provider_id: int
+    model: str | None = None
+    extra_prompt: str
+
+
+class GenerateActionRequest(BaseModel):
+    """Provider selection for an on-demand action (recompile/rejudge/regenerate)."""
+
+    provider_id: int
+    model: str | None = None
+
+
+class ProjectFileOut(BaseModel):
+    """One editable file of the project (main.tex, a chapter part, references.bib)."""
+
+    name: str
+    kind: str  # "main" | "section" | "bib"
+    language: str  # editor syntax mode: "latex" | "bibtex"
+    content: str
+    section_id: int | None = None
+
+
+class ProjectFileSave(BaseModel):
+    """Save the edited content of one project file and recompile."""
+
+    kind: str  # "main" | "section" | "bib"
+    section_id: int | None = None
+    content: str
 
 
 class ProjectUpdate(BaseModel):
@@ -101,6 +136,7 @@ class ProjectUpdate(BaseModel):
     structure_hint: str | None = None
     extractor_backend: str | None = None
     enable_ocr: bool | None = None
+    judge_vision: bool | None = None
     # Ordered list of source ids -> sets order_index
     source_order: list[int] | None = None
     # Ids of figures to force-include
@@ -124,6 +160,7 @@ class ProjectOut(BaseModel):
     structure_hint: str | None = None
     extractor_backend: str | None = None
     enable_ocr: bool | None = None
+    judge_vision: bool | None = None
     output_tex_path: str | None
     output_pdf_path: str | None
     error_message: str | None

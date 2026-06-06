@@ -85,7 +85,7 @@ async def run_generation(
                     fig.rel_path
                 )
 
-        llm_config = _build_llm_config(provider, model)
+        llm_config = build_llm_config(provider, model)
         few_shot = _load_few_shot()
         language = project.language
 
@@ -166,7 +166,8 @@ async def run_generation(
                     )
                     continue
                 src.n_pages = doc.n_pages
-                # Figures available for this source = extracted now + mandatory picks.
+                # Captions available for every figure of this source (extracted
+                # now + the user's mandatory picks).
                 all_figs = list(
                     dict.fromkeys(doc.figures + mandatory_by_name.get(src.filename, []))
                 )
@@ -179,7 +180,6 @@ async def run_generation(
                     {
                         "filename": doc.filename,
                         "full_text": doc.full_text(),
-                        "figures": all_figs,
                         "figure_captions": doc_captions,
                         "mandatory_figures": mandatory_by_name.get(src.filename, []),
                     }
@@ -208,6 +208,7 @@ async def run_generation(
                 metadata=metadata,
                 structure_hint=structure_hint,
                 progress=progress,
+                judge_vision=bool(project.judge_vision),
             )
 
             # ---- Persist plan/sections ----
@@ -265,7 +266,7 @@ async def run_generation(
             )
 
 
-def _build_llm_config(provider: ProviderConfig, model: str | None) -> dict[str, Any]:
+def build_llm_config(provider: ProviderConfig, model: str | None) -> dict[str, Any]:
     api_key = None
     if provider.api_key_encrypted:
         api_key = decrypt_api_key(provider.api_key_encrypted)
@@ -300,9 +301,21 @@ async def _persist_sections(session, project: Project, final: dict[str, Any]) ->
                 part_title=s.get("part_title"),
                 title=s.get("title", ""),
                 order_index=s.get("order_index", 0),
+                outline=s.get("outline") or None,
+                source_filenames=s.get("source_filenames") or None,
                 latex=s.get("latex", ""),
                 status=SectionStatus.completed,
             )
         )
     project.total_sections = len(written)
     project.completed_sections = len(written)
+    # Persist the chapter overview block so reassembly (recompile/refine/
+    # regenerate) keeps it instead of silently dropping it.
+    project.overview_latex = final.get("overview_latex") or None
+    # Persist the bibliography: the full reference pool (with citation keys) and
+    # the BibTeX database of the entries actually cited, shown as an editable
+    # file and shipped in the zip.
+    project.references_pool = final.get("references_pool") or None
+    project.bibliography_bib = final.get("bibliography_bib") or None
+    # A fresh run supersedes any earlier whole-document main.tex edit.
+    project.main_tex_override = None

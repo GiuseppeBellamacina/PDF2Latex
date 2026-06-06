@@ -47,6 +47,8 @@ export interface Section {
   order_index: number;
   status: string;
   latex: string | null;
+  has_undo: boolean;
+  has_source: boolean;
 }
 
 export interface Project {
@@ -62,6 +64,7 @@ export interface Project {
   structure_hint: string | null;
   extractor_backend: string | null;
   enable_ocr: boolean | null;
+  judge_vision: boolean | null;
   output_tex_path: string | null;
   output_pdf_path: string | null;
   error_message: string | null;
@@ -85,6 +88,7 @@ export interface ProjectUpdate {
   structure_hint?: string;
   extractor_backend?: string;
   enable_ocr?: boolean;
+  judge_vision?: boolean;
   source_order?: number[];
   mandatory_figure_ids?: number[];
 }
@@ -103,6 +107,20 @@ export interface ProjectSummary {
   language: string;
   total_sources: number;
   created_at: string;
+}
+
+export interface ProjectFile {
+  name: string;
+  kind: "main" | "section" | "bib";
+  language: "latex" | "bibtex";
+  content: string;
+  section_id: number | null;
+}
+
+export interface ProjectFileSave {
+  kind: "main" | "section" | "bib";
+  section_id?: number | null;
+  content: string;
 }
 
 const BASE = "/api";
@@ -170,6 +188,79 @@ export const api = {
     req<Project>("/projects", { method: "POST", body: form }),
   previewLatex: (id: string) =>
     req<{ latex: string }>(`/projects/${id}/preview`),
+  getFiles: (id: string) => req<ProjectFile[]>(`/projects/${id}/files`),
+  saveFile: (id: string, data: ProjectFileSave) =>
+    req<{ success: boolean; pdf: boolean; log_excerpt: string }>(
+      `/projects/${id}/files`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      },
+    ),
+  refineSection: (
+    id: string,
+    sectionId: number,
+    data: { provider_id: number; model?: string; extra_prompt: string },
+  ) =>
+    req<{
+      success: boolean;
+      section_id: number;
+      latex: string;
+      log_excerpt: string;
+      can_undo?: boolean;
+    }>(`/projects/${id}/sections/${sectionId}/refine`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }),
+  regenerateSection: (
+    id: string,
+    sectionId: number,
+    data: { provider_id: number; model?: string },
+  ) =>
+    req<{
+      success: boolean;
+      section_id: number;
+      latex: string;
+      log_excerpt: string;
+      can_undo?: boolean;
+    }>(`/projects/${id}/sections/${sectionId}/regenerate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }),
+  undoSection: (id: string, sectionId: number) =>
+    req<{
+      success: boolean;
+      section_id: number;
+      latex: string;
+      log_excerpt: string;
+      can_undo: boolean;
+    }>(`/projects/${id}/sections/${sectionId}/undo`, { method: "POST" }),
+  recompile: (id: string, data: { provider_id: number; model?: string }) =>
+    req<{ success: boolean; pdf: boolean; log_excerpt: string }>(
+      `/projects/${id}/recompile`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      },
+    ),
+  rejudge: (id: string, data: { provider_id: number; model?: string }) =>
+    req<{
+      applied: boolean;
+      approved: boolean;
+      score: number;
+      issues: string[];
+      summary?: string;
+      success: boolean;
+      log_excerpt?: string;
+    }>(`/projects/${id}/rejudge`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }),
   backends: () => req<Backends>("/backends"),
 
   figureUrl: (projectId: string, relPath: string) => {
@@ -178,4 +269,6 @@ export const api = {
   },
   downloadUrl: (id: string, kind: "tex" | "pdf") =>
     `${BASE}/projects/${id}/download/${kind}`,
+  // Inline PDF URL for in-browser preview (served with Content-Disposition: inline).
+  viewPdfUrl: (id: string) => `${BASE}/projects/${id}/view/pdf`,
 };

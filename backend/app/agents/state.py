@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any, TypedDict
+from typing import Any, Required, TypedDict
 
 ProgressCb = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -15,6 +15,7 @@ class SourceAnalysis(TypedDict):
     formulas: list[str]
     figures: list[str]
     keywords: list[str]
+    references: list[dict[str, str]]
 
 
 class PlannedSection(TypedDict):
@@ -30,33 +31,48 @@ class WrittenSection(TypedDict):
     part_title: str
     order_index: int
     latex: str
+    outline: dict[str, Any]
+    source_filenames: list[str]
 
 
 class GraphState(TypedDict, total=False):
+    # ``Required`` marks the keys always present by the time they are read via
+    # subscript (the pipeline inputs, and the intermediates produced by an
+    # earlier node before any node that reads them). The rest stay optional and
+    # are accessed with ``state.get(...)``.
     # Inputs
     user_prompt: str
     language: str
-    documents: list[
-        dict[str, Any]
+    documents: Required[
+        list[dict[str, Any]]
     ]  # serialized ExtractedDocument {filename, full_text, figures}
     few_shot: str
     metadata: dict[str, Any]  # title/author/subtitle/abstract/cover_date
     structure_hint: str
 
     # LLM config (serialized LLMConfig dict)
-    llm_config: dict[str, Any]
+    llm_config: Required[dict[str, Any]]
+
+    # Per-run overrides (decided in the UI, not from global settings)
+    judge_vision: bool
 
     # Paths
     work_dir: str
     figures_dir: str | None
 
     # Intermediate / outputs
-    analyses: list[SourceAnalysis]
+    analyses: Required[list[SourceAnalysis]]
     title: str
-    plan: list[PlannedSection]
-    sections: list[WrittenSection]
+    plan: Required[list[PlannedSection]]
+    sections: Required[list[WrittenSection]]
     review_notes: list[str]
-    final_latex: str
+    overview_latex: str  # optional per-chapter synopsis block (TOC-like)
+    # Bibliography: ``references_pool`` is every reference extracted from the
+    # sources (with citation keys); ``bibliography_bib`` is the BibTeX database
+    # filtered to the entries actually cited in the final document.
+    references_pool: list[dict[str, str]]
+    bibliography_bib: str
+    final_latex: Required[str]
     pdf_path: str | None
     compile_log: str
 
@@ -64,8 +80,8 @@ class GraphState(TypedDict, total=False):
     judge_rounds: int
     judge_action: str  # "approve" | "revise" | "skip" | "stop"
     judge_score: int
-    good_latex: str  # last version that compiled (rollback target)
-    good_pdf: str | None
+    good_latex: Required[str]  # last version that compiled (rollback target)
+    good_pdf: Required[str | None]
 
     # Progress callback (not serialized, passed through)
     progress: ProgressCb

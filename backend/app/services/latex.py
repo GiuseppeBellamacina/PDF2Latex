@@ -20,6 +20,9 @@ PREAMBLE = r"""\documentclass[11pt,a4paper]{report}
 \usepackage{float}
 \usepackage{enumitem}
 \usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{adjustbox}
 \usepackage[hidelinks]{hyperref}
 \usepackage{geometry}
 \geometry{margin=2.5cm}
@@ -49,6 +52,13 @@ ABSTRACT_BLOCK = r"""\begin{abstract}
 
 FRONT_MATTER_TAIL = r"""\tableofcontents
 \clearpage
+"""
+
+# Appended (when the document cites references) right before \end{document} so
+# the single, structured bibliography always sits at the very end.
+BIBLIOGRAPHY_BLOCK = r"""\clearpage
+\bibliographystyle{plain}
+\bibliography{references}
 """
 
 POSTAMBLE = r"""
@@ -95,8 +105,13 @@ def assemble_document(
     subtitle: str = "",
     abstract: str = "",
     cover_date: str = "",
+    has_bibliography: bool = False,
 ) -> str:
-    """Join the preamble, title page, optional abstract, body and postamble."""
+    """Join the preamble, title page, optional abstract, body and postamble.
+
+    When ``has_bibliography`` is set, a single ``\\bibliography{references}`` block
+    is appended at the very end of the document (after all chapters).
+    """
     babel_lang = _babel_language(language)
     preamble = PREAMBLE % {"language": babel_lang}
 
@@ -117,6 +132,7 @@ def assemble_document(
         abstract_block = ABSTRACT_BLOCK % {"abstract": _escape(abstract)}
 
     body = "\n\n".join(body_parts)
+    bibliography = ("\n" + BIBLIOGRAPHY_BLOCK) if has_bibliography else ""
     return (
         preamble
         + title_page
@@ -125,6 +141,7 @@ def assemble_document(
         + "\n"
         + body
         + "\n"
+        + bibliography
         + POSTAMBLE
     )
 
@@ -134,6 +151,19 @@ def slugify_title(title: str, fallback: str = "documento") -> str:
     slug = re.sub(r"[^\w\s-]", "", (title or "").strip().lower(), flags=re.UNICODE)
     slug = re.sub(r"[\s_-]+", "-", slug).strip("-")
     return slug[:80] or fallback
+
+
+def inject_bibliography(latex: str) -> str:
+    """Insert the single end-of-document bibliography block before \\end{document}.
+
+    Assumes any pre-existing bibliography commands were already stripped. No-op
+    when the block is already present.
+    """
+    if "\\bibliography{references}" in latex:
+        return latex
+    if "\\end{document}" not in latex:
+        return latex.rstrip() + "\n\n" + BIBLIOGRAPHY_BLOCK
+    return latex.replace("\\end{document}", BIBLIOGRAPHY_BLOCK + "\\end{document}", 1)
 
 
 def _split_header_and_body(full_latex: str) -> tuple[str, str, str]:
@@ -192,7 +222,22 @@ def split_into_part_files(full_latex: str) -> tuple[str, dict[str, str]]:
         parts[rel] = chunk.strip() + "\n"
         inputs.append(f"\\input{{parts/{name}}}")
 
-    main_tex = header.rstrip() + "\n\n" + "\n".join(inputs) + "\n\n" + footer + "\n"
+    # Keep the bibliography commands in main.tex (not buried in the last part),
+    # so the modular project mirrors the monolithic one and compiles with bibtex.
+    bib_re = re.compile(
+        r"\n?\\bibliographystyle\{[^}]*\}\s*\\bibliography\{[^}]*\}\s*", re.DOTALL
+    )
+    bib_block = ""
+    for rel, content in list(parts.items()):
+        m = bib_re.search(content)
+        if m:
+            bib_block = "\\bibliographystyle{plain}\n\\bibliography{references}\n"
+            parts[rel] = bib_re.sub("\n", content).rstrip() + "\n"
+
+    tail = ("\n\\clearpage\n" + bib_block) if bib_block else ""
+    main_tex = (
+        header.rstrip() + "\n\n" + "\n".join(inputs) + tail + "\n\n" + footer + "\n"
+    )
     return main_tex, parts
 
 
@@ -201,13 +246,20 @@ def build_project_zip(
     main_tex: str,
     parts: dict[str, str],
     figures_dir: Path | None = None,
+    bib_content: str | None = None,
 ) -> Path:
-    """Write a self-contained LaTeX project zip: main.tex + parts/ + figures/."""
+    """Write a self-contained LaTeX project zip: main.tex + parts/ + figures/.
+
+    When ``bib_content`` is provided, a ``references.bib`` is included so the
+    project compiles with bibtex out of the box.
+    """
     zip_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("main.tex", main_tex)
         for rel, content in parts.items():
             zf.writestr(rel, content)
+        if bib_content and bib_content.strip():
+            zf.writestr("references.bib", bib_content)
         if figures_dir and figures_dir.exists():
             for fig in sorted(figures_dir.iterdir()):
                 if fig.is_file():
@@ -217,6 +269,32 @@ def build_project_zip(
 
 _INCLUDE_RE = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}")
 _FIGURE_ENV_RE = re.compile(r"\\begin\{figure\}.*?\\end\{figure\}", re.DOTALL)
+_TABULAR_RE = re.compile(
+    r"\\begin\{(tabular|tabularx|array)\}.*?\\end\{\1\}", re.DOTALL
+)
+
+
+def fit_wide_tables(tex: str) -> str:
+    """Shrink-to-fit any ``tabular`` that could run off the page edge.
+
+    Each ``tabular``/``array`` block is wrapped in an ``adjustbox`` with
+    ``max width=\\linewidth`` so a wide table is scaled down to the text width
+    instead of overflowing into the margin; tables that already fit are left at
+    their natural size (``adjustbox`` only shrinks, never enlarges). Blocks
+    already wrapped in ``adjustbox``/``resizebox`` are skipped.
+    """
+
+    def wrap(match: re.Match) -> str:
+        block = match.group(0)
+        # Don't double-wrap if the author/model already handled sizing.
+        preceding = tex[max(0, match.start() - 60) : match.start()]
+        if "adjustbox" in preceding or "resizebox" in preceding:
+            return block
+        return (
+            "\\begin{adjustbox}{max width=\\linewidth}\n" + block + "\n\\end{adjustbox}"
+        )
+
+    return _TABULAR_RE.sub(wrap, tex)
 
 
 def _available_figures(figures_dir: Path) -> dict[str, str]:
@@ -283,6 +361,7 @@ def write_and_compile(
     figures_src: Path | None = None,
     job_name: str = "main",
     allowed_figures: set[str] | None = None,
+    bib_content: str | None = None,
 ) -> CompileResult:
     """Write ``tex_content`` into ``work_dir`` and compile it with pdflatex.
 
@@ -290,6 +369,8 @@ def write_and_compile(
     project: only those are placed in ``work_dir/figures``, so unselected
     figures can never appear in the PDF nor in the downloadable zip. The figures
     folder is rebuilt each run to drop anything left by a previous run.
+    ``bib_content``, when set and the document uses ``\\bibliography``, is written
+    as ``references.bib`` and a ``bibtex`` pass is run so citations resolve.
     """
     work_dir.mkdir(parents=True, exist_ok=True)
     tex_path = work_dir / f"{job_name}.tex"
@@ -313,7 +394,16 @@ def write_and_compile(
     # Drop/fix references to figures that do not exist so a single hallucinated
     # \includegraphics cannot abort the whole compilation.
     tex_content, dropped = sanitize_figures(tex_content, work_dir / "figures")
+    # Scale oversized tables down to the text width so they don't run off-page.
+    tex_content = fit_wide_tables(tex_content)
     tex_path.write_text(tex_content, encoding="utf-8")
+
+    # Write the bibliography database and decide whether a bibtex pass is needed.
+    use_bibtex = bool(
+        bib_content and bib_content.strip() and r"\bibliography{" in tex_content
+    )
+    if bib_content and bib_content.strip():
+        (work_dir / "references.bib").write_text(bib_content, encoding="utf-8")
 
     log_acc: list[str] = []
     if dropped:
@@ -322,9 +412,9 @@ def write_and_compile(
             + ", ".join(sorted(set(dropped))[:20])
         )
     pdf_path = work_dir / f"{job_name}.pdf"
-    passes = max(1, settings.latex_compile_passes)
-    for _ in range(passes):
-        proc = subprocess.run(
+
+    def _pdflatex() -> subprocess.CompletedProcess:
+        return subprocess.run(
             [
                 settings.pdflatex_bin,
                 "-interaction=nonstopmode",
@@ -337,6 +427,32 @@ def write_and_compile(
             text=True,
             timeout=300,
         )
+
+    # With bibtex we need: pdflatex -> bibtex -> pdflatex -> pdflatex so labels
+    # and the bibliography resolve. Without it, the plain N-pass loop is used.
+    passes = max(1, settings.latex_compile_passes)
+    if use_bibtex:
+        first = _pdflatex()
+        log_acc.append(first.stdout[-4000:])
+        if first.returncode != 0:
+            return CompileResult(success=False, pdf_path=None, log="\n".join(log_acc))
+        try:
+            bib = subprocess.run(
+                [settings.bibtex_bin, job_name],
+                cwd=work_dir,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            log_acc.append("[bibtex]\n" + (bib.stdout or "")[-2000:])
+        except (OSError, subprocess.SubprocessError) as exc:
+            # bibtex missing/failed: keep going so the document still compiles
+            # (citations will show as [?] but the build does not abort).
+            log_acc.append(f"[bibtex] non eseguito: {exc}")
+        passes = max(2, passes)
+
+    for _ in range(passes):
+        proc = _pdflatex()
         log_acc.append(proc.stdout[-4000:])
         if proc.returncode != 0:
             return CompileResult(success=False, pdf_path=None, log="\n".join(log_acc))

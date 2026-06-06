@@ -341,9 +341,10 @@ class PyMuPDFExtractor(BaseExtractor):
         slug = _slug(pdf_path.name)
         seen_xrefs: set[int] = set()
         out: list[FigureInfo] = []
-        for i, page in enumerate(doc, start=1):
+        for i in range(1, doc.page_count + 1):
             if len(out) >= MAX_FIGURES_PER_DOC:
                 break
+            page = doc.load_page(i - 1)
             out.extend(
                 self._extract_page_figures(
                     fitz, doc, page, figures_dir, slug, i, seen_xrefs, ocr_figures=True
@@ -375,7 +376,8 @@ class PyMuPDFExtractor(BaseExtractor):
             message=f"PyMuPDF: lettura di {pdf_path.name}",
             detail=f"OCR {'attivo' if ocr_active else 'non attivo'}",
         )
-        for i, page in enumerate(doc, start=1):
+        for i in range(1, doc.page_count + 1):
+            page = doc.load_page(i - 1)
             text = page.get_text("text").strip()
 
             source = "pymupdf"
@@ -724,6 +726,18 @@ def extract_figures(pdf_path: Path, figures_dir: Path) -> list[FigureInfo]:
     return PyMuPDFExtractor(render_dpi=settings.render_dpi).extract_figures(
         pdf_path, figures_dir
     )
+
+
+def pdf_page_count(pdf_path: Path) -> int:
+    """Return the number of pages in a PDF (0 if it can't be read)."""
+    try:
+        import fitz  # PyMuPDF
+
+        with fitz.open(pdf_path) as doc:
+            return doc.page_count
+    except Exception as exc:  # noqa: BLE001 - best-effort, never block upload
+        logger.debug("Conteggio pagine fallito per %s: %s", pdf_path, exc)
+        return 0
 
 
 def available_backends() -> dict[str, bool]:

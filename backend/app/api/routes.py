@@ -11,6 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.schemas import (
+    GenerateActionRequest,
+    ProjectFileOut,
+    ProjectFileSave,
     ProjectOut,
     ProjectSummary,
     ProjectUpdate,
@@ -18,14 +21,35 @@ from app.api.schemas import (
     ProviderOut,
     ProviderTestRequest,
     ProviderUpdate,
+    SectionRefineRequest,
 )
 from app.core.config import settings
 from app.core.encryption import encrypt_api_key
 from app.core.llm_factory import LLMConfig, test_llm_connection
 from app.db.database import get_db
-from app.db.models import Figure, Project, ProjectStatus, ProviderConfig, Source
-from app.services.extractor import available_backends, extract_figures
+from app.db.models import (
+    Figure,
+    Project,
+    ProjectStatus,
+    ProviderConfig,
+    Section,
+    Source,
+)
+from app.services.assembly import (
+    assemble_from_sections,
+    load_sections,
+    recompile_project,
+)
+from app.services.extractor import (
+    available_backends,
+    extract_figures,
+    pdf_page_count,
+)
 from app.services.latex import build_project_zip, slugify_title, split_into_part_files
+from app.services.refine import refine_section
+from app.services.regenerate import regenerate_section
+from app.services.rejudge import rejudge_project
+from app.services.runner import build_llm_config
 
 router = APIRouter()
 
@@ -164,6 +188,7 @@ async def create_project(
             filename=safe_name,
             path=str(target),
             order_index=idx,
+            n_pages=pdf_page_count(target),
         )
         db.add(source)
         await db.flush()  # get source.id
@@ -294,6 +319,211 @@ async def preview_latex(project_key: str, db: AsyncSession = Depends(get_db)):
     return {"latex": path.read_text(encoding="utf-8")}
 
 
+def _part_filename(section: Section, index: int) -> str:
+    stem = slugify_title(section.title or "", fallback=f"part-{index:02d}")
+    return f"parts/{index:02d}-{stem}.tex"
+
+
+@router.get("/projects/{project_key}/files", response_model=list[ProjectFileOut])
+async def list_files(project_key: str, db: AsyncSession = Depends(get_db)):
+    """List the project's editable files: main.tex, each part, references.bib."""
+    project = await _project_by_key(db, project_key)
+    sections = await load_sections(db, project.id)
+
+    main_content = project.main_tex_override or assemble_from_sections(
+        project, sections
+    )
+    files: list[ProjectFileOut] = [
+        ProjectFileOut(
+            name="main.tex", kind="main", language="latex", content=main_content
+        )
+    ]
+    for i, s in enumerate(sections, start=1):
+        files.append(
+            ProjectFileOut(
+                name=_part_filename(s, i),
+                kind="section",
+                language="latex",
+                content=s.latex or "",
+                section_id=s.id,
+            )
+        )
+    if project.bibliography_bib:
+        files.append(
+            ProjectFileOut(
+                name="references.bib",
+                kind="bib",
+                language="bibtex",
+                content=project.bibliography_bib,
+            )
+        )
+    return files
+
+
+@router.put("/projects/{project_key}/files")
+async def save_file(
+    project_key: str,
+    payload: ProjectFileSave,
+    db: AsyncSession = Depends(get_db),
+):
+    """Save an edited file and recompile the document.
+
+    Editing ``main.tex`` stores a whole-document override compiled verbatim;
+    editing a part or ``references.bib`` is a structured edit that clears any
+    override and reassembles from the sections.
+    """
+    project = await _project_by_key(db, project_key)
+    if payload.kind == "main":
+        project.main_tex_override = payload.content
+        result = await recompile_project(db, project, full_latex=payload.content)
+    elif payload.kind == "section":
+        if payload.section_id is None:
+            raise HTTPException(400, "section_id mancante")
+        section = await _resolve_section(db, project, payload.section_id)
+        section.previous_latex = section.latex
+        section.latex = payload.content
+        project.main_tex_override = None
+        result = await recompile_project(db, project)
+    elif payload.kind == "bib":
+        project.bibliography_bib = payload.content or None
+        project.main_tex_override = None
+        result = await recompile_project(db, project)
+    else:
+        raise HTTPException(400, "Tipo di file non valido")
+    return {
+        "success": result["success"],
+        "pdf": result["success"],
+        "log_excerpt": result["log_excerpt"],
+    }
+
+
+@router.post("/projects/{project_key}/sections/{section_id}/refine")
+async def refine_section_endpoint(
+    project_key: str,
+    section_id: int,
+    payload: SectionRefineRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Apply a quick fix instruction to one section and recompile the document."""
+    if not payload.extra_prompt.strip():
+        raise HTTPException(400, "Istruzione vuota")
+    project = await _project_by_key(db, project_key)
+    section = await db.get(Section, section_id)
+    if section is None or section.project_id != project.id:
+        raise HTTPException(404, "Sezione non trovata")
+    provider = await db.get(ProviderConfig, payload.provider_id)
+    if provider is None:
+        raise HTTPException(404, "Provider non trovato")
+    llm_config = build_llm_config(provider, payload.model)
+    return await refine_section(db, project, section, payload.extra_prompt, llm_config)
+
+
+async def _resolve_provider(db: AsyncSession, provider_id: int) -> ProviderConfig:
+    provider = await db.get(ProviderConfig, provider_id)
+    if provider is None:
+        raise HTTPException(404, "Provider non trovato")
+    return provider
+
+
+async def _resolve_section(
+    db: AsyncSession, project: Project, section_id: int
+) -> Section:
+    section = await db.get(Section, section_id)
+    if section is None or section.project_id != project.id:
+        raise HTTPException(404, "Sezione non trovata")
+    return section
+
+
+@router.post("/projects/{project_key}/recompile")
+async def recompile_endpoint(
+    project_key: str,
+    payload: GenerateActionRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually retry compilation from the stored sections (LLM auto-fix loop).
+
+    Recovers a run whose compilation failed after the automatic retries, without
+    redoing analysis/planning/writing — the section work is preserved.
+    """
+    project = await _project_by_key(db, project_key)
+    sections = (
+        (await db.execute(select(Section).where(Section.project_id == project.id)))
+        .scalars()
+        .all()
+    )
+    if not sections:
+        raise HTTPException(400, "Nessuna sezione da ricompilare")
+    provider = await _resolve_provider(db, payload.provider_id)
+    llm_config = build_llm_config(provider, payload.model)
+    return await recompile_project(db, project, llm_config=llm_config, review_passes=2)
+
+
+@router.post("/projects/{project_key}/rejudge")
+async def rejudge_endpoint(
+    project_key: str,
+    payload: GenerateActionRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Run the structural judge again on demand, applying a revision if needed."""
+    project = await _project_by_key(db, project_key)
+    provider = await _resolve_provider(db, payload.provider_id)
+    llm_config = build_llm_config(provider, payload.model)
+    return await rejudge_project(db, project, llm_config)
+
+
+@router.post("/projects/{project_key}/sections/{section_id}/regenerate")
+async def regenerate_section_endpoint(
+    project_key: str,
+    section_id: int,
+    payload: GenerateActionRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-author one section from its source PDFs, then recompile the document."""
+    project = await _project_by_key(db, project_key)
+    section = await _resolve_section(db, project, section_id)
+    provider = await _resolve_provider(db, payload.provider_id)
+    llm_config = build_llm_config(provider, payload.model)
+    return await regenerate_section(db, project, section, llm_config)
+
+
+@router.post("/projects/{project_key}/sections/{section_id}/undo")
+async def undo_section_endpoint(
+    project_key: str,
+    section_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Revert the last quick fix / regenerate of a section and recompile."""
+    project = await _project_by_key(db, project_key)
+    section = await _resolve_section(db, project, section_id)
+    if not section.previous_latex:
+        raise HTTPException(400, "Nessuna versione precedente da ripristinare")
+    section.latex, section.previous_latex = section.previous_latex, section.latex
+    result = await recompile_project(db, project)
+    return {
+        "success": result["success"],
+        "section_id": section.id,
+        "latex": section.latex,
+        "log_excerpt": result["log_excerpt"],
+        "can_undo": bool(section.previous_latex),
+    }
+
+
+@router.get("/projects/{project_key}/view/pdf")
+async def view_pdf(project_key: str, db: AsyncSession = Depends(get_db)):
+    """Serve the compiled PDF inline (for in-browser preview, not a download)."""
+    project = await _project_by_key(db, project_key)
+    if not project.output_pdf_path:
+        raise HTTPException(404, "File non disponibile")
+    path = Path(project.output_pdf_path)
+    if not path.exists():
+        raise HTTPException(404, "File mancante")
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        content_disposition_type="inline",
+    )
+
+
 @router.get("/projects/{project_key}/download/{kind}")
 async def download(project_key: str, kind: str, db: AsyncSession = Depends(get_db)):
     project = await _project_by_key(db, project_key)
@@ -318,7 +548,13 @@ async def download(project_key: str, kind: str, db: AsyncSession = Depends(get_d
         full_latex = main_path.read_text(encoding="utf-8")
         main_tex, parts = split_into_part_files(full_latex)
         zip_path = work_dir / f"{slug}.zip"
-        build_project_zip(zip_path, main_tex, parts, work_dir / "figures")
+        build_project_zip(
+            zip_path,
+            main_tex,
+            parts,
+            work_dir / "figures",
+            bib_content=project.bibliography_bib,
+        )
         return FileResponse(
             zip_path, media_type="application/zip", filename=f"{slug}.zip"
         )

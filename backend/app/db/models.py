@@ -71,9 +71,28 @@ class Project(Base):
     # Structure / index guidance for the planner
     structure_hint = Column(Text, nullable=True)
 
+    # Optional per-chapter synopsis block rendered right after the TOC. Kept so
+    # it survives reassembly on recompile / quick fix / regenerate.
+    overview_latex = Column(Text, nullable=True)
+
+    # Bibliography: the BibTeX database (references.bib) shown as an editable
+    # file and shipped in the zip, holding only the entries actually cited in
+    # the document. ``references_pool`` keeps every reference extracted from the
+    # sources (with its citation key) so the cited subset can be recomputed.
+    bibliography_bib = Column(Text, nullable=True)
+    references_pool = Column(JSON, nullable=True)
+
+    # When the user edits the whole ``main.tex`` from the file editor, the
+    # verbatim document is stored here and compiled as-is (bypassing the
+    # per-section reassembly). Any structured edit (a section/bib save, refine,
+    # regenerate, undo) clears it so reassembly takes over again.
+    main_tex_override = Column(Text, nullable=True)
+
     # Extraction configuration
     extractor_backend = Column(String(50), nullable=True)  # pymupdf|docling|markitdown
     enable_ocr = Column(Boolean, default=False)
+    # Optional vision judge (needs a multimodal model). Off by default.
+    judge_vision = Column(Boolean, default=False)
 
     output_tex_path = Column(String(512), nullable=True)
     output_pdf_path = Column(String(512), nullable=True)
@@ -144,10 +163,24 @@ class Section(Base):
     title = Column(String(255), nullable=False)
     order_index = Column(Integer, default=0)
     outline = Column(JSON, nullable=True)
+    # Source PDFs this section draws from (used to regenerate it from scratch).
+    source_filenames = Column(JSON, nullable=True)
     latex = Column(Text, nullable=True)
+    # Previous LaTeX kept so a quick fix / regenerate can be undone.
+    previous_latex = Column(Text, nullable=True)
     status = Column(SAEnum(SectionStatus), default=SectionStatus.pending)
 
     project = relationship("Project", back_populates="sections")
+
+    @property
+    def has_undo(self) -> bool:
+        """True when a previous LaTeX version is stored (a fix can be undone)."""
+        return bool(self.previous_latex)
+
+    @property
+    def has_source(self) -> bool:
+        """True when the source filenames are known (can regenerate from source)."""
+        return bool(self.source_filenames)
 
 
 class ProviderConfig(Base):

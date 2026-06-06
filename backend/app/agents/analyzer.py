@@ -35,6 +35,32 @@ def _dedup_keep_order(items: list[str]) -> list[str]:
     return out
 
 
+def _dedup_references(refs: list[dict[str, str]]) -> list[dict[str, str]]:
+    """De-duplicate parsed references by normalized title (then author+year)."""
+    import re
+
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for r in refs:
+        title = str(r.get("title", "")).strip()
+        authors = str(r.get("authors", "")).strip()
+        if not title and not authors:
+            continue
+        norm = re.sub(r"[^a-z0-9]+", "", (title or authors).lower())
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(
+            {
+                "authors": authors,
+                "title": title,
+                "year": str(r.get("year", "")).strip(),
+                "venue": str(r.get("venue", "")).strip(),
+            }
+        )
+    return out
+
+
 async def _analyze_chunk(
     filename: str, idx: int, total: int, text: str, llm_config: dict[str, Any]
 ) -> AnalysisSchema:
@@ -88,6 +114,9 @@ async def analyze_document(
     formulas = _dedup_keep_order([f for p in partials for f in p.formulas])
     figures = _dedup_keep_order([f for p in partials for f in p.figures])
     keywords = _dedup_keep_order([k for p in partials for k in p.keywords])
+    references = _dedup_references(
+        [r.model_dump() for p in partials for r in p.references]
+    )
 
     summaries = [p.summary for p in partials if p.summary.strip()]
     if len(summaries) == 1:
@@ -121,4 +150,5 @@ async def analyze_document(
         formulas=formulas,
         figures=figures,
         keywords=keywords,
+        references=references,
     )

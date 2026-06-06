@@ -11,19 +11,32 @@ from __future__ import annotations
 import asyncio
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from langgraph.graph import END, START, StateGraph
 
 from app.agents.analyzer import analyze_document
 from app.agents.judge import judge_structure, revise_structure
 from app.agents.planner import plan_document
+from app.agents.prompts import OVERVIEW_SYSTEM
 from app.agents.reviewer import review_document
+from app.agents.schemas import OverviewSchema
 from app.agents.state import GraphState
-from app.agents.utils import tokens
+from app.agents.utils import call_llm_structured, compile_error_excerpt, tokens
 from app.agents.writer import figure_latex, write_section
 from app.core.logging import get_logger
-from app.services.latex import assemble_document, write_and_compile
+from app.services.bibliography import (
+    build_bib,
+    cited_keys,
+    consolidate_references,
+    strip_inline_bibliography,
+)
+from app.services.latex import (
+    _escape,
+    assemble_document,
+    inject_bibliography,
+    write_and_compile,
+)
 from app.services.latex_lint import lint_latex
 
 logger = get_logger("pipeline")
@@ -96,18 +109,6 @@ async def _emit(state: GraphState, event: dict[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 # Nodes                                                                         #
 # --------------------------------------------------------------------------- #
-def _compile_error_excerpt(log: str, max_lines: int = 6) -> str:
-    """Pull the most relevant error lines out of a pdflatex log for the UI."""
-    if not log:
-        return ""
-    lines = [ln for ln in log.splitlines() if ln.strip()]
-    errors = [
-        ln for ln in lines if ln.startswith("!") or "Error" in ln or "Undefined" in ln
-    ]
-    chosen = errors[:max_lines] or lines[-max_lines:]
-    return " | ".join(ln.strip()[:160] for ln in chosen)
-
-
 async def analyze_node(state: GraphState) -> dict[str, Any]:
     documents = state["documents"]
     llm_config = state["llm_config"]
@@ -187,6 +188,15 @@ async def write_node(state: GraphState) -> dict[str, Any]:
         for rel, cap in (d.get("figure_captions") or {}).items():
             if cap:
                 captions_by_path[rel] = cap
+    # Consolidate the references extracted from every source into one pool with
+    # stable citation keys; each section is offered only the references coming
+    # from its own sources, so it can \cite the ones it actually relies on.
+    pool = consolidate_references(
+        [(a["filename"], a.get("references", [])) for a in state.get("analyses", [])]
+    )
+    refs_by_source: dict[str, list[dict[str, str]]] = {}
+    for ref in pool:
+        refs_by_source.setdefault(ref["source_filename"], []).append(ref)
     # Assign each user-selected figure to exactly one section (round-robin across
     # the sections that use its source). Only these figures may appear; nothing
     # else is offered to the writer.
@@ -205,6 +215,13 @@ async def write_node(state: GraphState) -> dict[str, Any]:
 
     async def _write(idx: int, section: Any) -> Any:
         nonlocal done
+        section_refs: list[dict[str, str]] = []
+        seen_keys: set[str] = set()
+        for fname in section.get("source_filenames", []):
+            for ref in refs_by_source.get(fname, []):
+                if ref["key"] not in seen_keys:
+                    seen_keys.add(ref["key"])
+                    section_refs.append(ref)
         result = await write_section(
             section,
             documents_by_name,
@@ -213,6 +230,7 @@ async def write_node(state: GraphState) -> dict[str, Any]:
             few_shot,
             language,
             llm_config,
+            available_refs=section_refs,
         )
         async with lock:
             done += 1
@@ -231,7 +249,108 @@ async def write_node(state: GraphState) -> dict[str, Any]:
 
     sections = await asyncio.gather(*[_write(i, s) for i, s in enumerate(plan)])
     sections = sorted(sections, key=lambda s: s["order_index"])
-    return {"sections": list(sections)}
+    return {"sections": list(sections), "references_pool": pool}
+
+
+def _group_chapters(sections: list[Any]) -> list[tuple[str, list[Any]]]:
+    """Group written sections by chapter (``part_title``) preserving order."""
+    chapters: list[tuple[str, list[Any]]] = []
+    index: dict[str, int] = {}
+    for s in sections:
+        pt = (s.get("part_title") or s.get("title") or "Capitolo").strip()
+        if pt not in index:
+            index[pt] = len(chapters)
+            chapters.append((pt, []))
+        chapters[index[pt]][1].append(s)
+    return chapters
+
+
+async def overview_node(state: GraphState) -> dict[str, Any]:
+    """Build a short per-chapter synopsis page shown right after the TOC.
+
+    Only runs when the document merges more than one source or spans at least
+    ``overview_min_chapters`` chapters, so single-topic documents are unaffected.
+    """
+    from app.core.config import settings as _settings
+
+    if not _settings.overview_enabled:
+        return {}
+    sections = state.get("sections", []) or []
+    chapters = _group_chapters(sections)
+    n_docs = len(state.get("documents", []) or [])
+    triggered = n_docs > 1 or len(chapters) >= _settings.overview_min_chapters
+    if not triggered or len(chapters) < 2:
+        return {}
+
+    await _emit(
+        state,
+        {
+            "stage": "overview",
+            "message": f"Panoramica dei {len(chapters)} capitoli",
+            "progress": 80,
+        },
+    )
+
+    language = state.get("language", "italian")
+    lines: list[str] = []
+    for pt, secs in chapters:
+        titles = "; ".join(s.get("title", "") for s in secs)
+        points: list[str] = []
+        for s in secs:
+            outline = s.get("outline") or {}
+            for value in outline.values():
+                if isinstance(value, list):
+                    points.extend(str(x) for x in value[:3])
+        pts = "; ".join(points[:6])
+        lines.append(f"- Capitolo: {pt}\n  Sezioni: {titles}\n  Punti: {pts}")
+    user = f"Lingua: {language}\n\nCapitoli:\n" + "\n".join(lines)
+
+    try:
+        verdict = await call_llm_structured(
+            state["llm_config"],
+            OVERVIEW_SYSTEM,
+            user,
+            schema=OverviewSchema,
+            temperature=_settings.planner_temperature,
+            label="overview",
+        )
+    except Exception as exc:  # noqa: BLE001 - overview is best-effort
+        logger.warning("Generazione panoramica fallita: %s", exc)
+        return {}
+
+    by_title = {
+        c.part_title.strip().lower(): c.synopsis.strip()
+        for c in verdict.chapters
+        if c.synopsis.strip()
+    }
+    items: list[str] = []
+    for i, (pt, _secs) in enumerate(chapters):
+        synopsis = by_title.get(pt.strip().lower(), "")
+        if not synopsis and i < len(verdict.chapters):
+            synopsis = verdict.chapters[i].synopsis.strip()
+        if not synopsis:
+            continue
+        items.append(f"  \\item[{_escape(pt)}] {_escape(synopsis)}")
+
+    if not items:
+        return {}
+
+    block = (
+        "\\chapter*{Panoramica}\n"
+        "\\addcontentsline{toc}{chapter}{Panoramica}\n"
+        "\\begin{description}\n" + "\n".join(items) + "\n\\end{description}\n"
+        "\\clearpage"
+    )
+    await _emit(
+        state,
+        {
+            "stage": "overview",
+            "message": "Panoramica dei capitoli generata",
+            "progress": 81,
+            "level": "success",
+        },
+    )
+    return {"overview_latex": block}
 
 
 def _build_body(state: GraphState) -> list[str]:
@@ -279,6 +398,10 @@ def _assemble_initial(state: GraphState) -> str:
     # Safety net: ensure every mandatory figure ends up in the document. Any
     # mandatory figure not already referenced is appended in a dedicated section.
     body_parts = _ensure_mandatory_figures(state, body_parts)
+    # Optional per-chapter synopsis page, rendered right after the TOC.
+    overview = state.get("overview_latex")
+    if overview:
+        body_parts = [overview, *body_parts]
     return assemble_document(
         title=title,
         body_parts=body_parts,
@@ -339,6 +462,20 @@ async def review_node(state: GraphState) -> dict[str, Any]:
     figures_src = state.get("figures_dir")
     figures_path = Path(figures_src) if figures_src else None
 
+    # Build the bibliography deterministically and force a single instance at the
+    # end of the document: keep only the references actually cited (\cite) and
+    # strip any bibliography the model left between chapters.
+    pool = state.get("references_pool", []) or []
+
+    def _apply_bibliography(tex: str) -> tuple[str, str]:
+        tex = strip_inline_bibliography(tex)
+        bib = build_bib(pool, cited_keys(tex)) if pool else ""
+        if bib.strip():
+            tex = inject_bibliography(tex)
+        return tex, bib
+
+    latex, bib_content = _apply_bibliography(latex)
+
     # Only the user-selected figures may reach the PDF and the downloadable zip.
     allowed_figures = {
         Path(rel).name
@@ -354,6 +491,7 @@ async def review_node(state: GraphState) -> dict[str, Any]:
             figures_src=figures_path,
             job_name="main",
             allowed_figures=allowed_figures,
+            bib_content=bib_content,
         )
         if result.success:
             await _emit(
@@ -378,6 +516,7 @@ async def review_node(state: GraphState) -> dict[str, Any]:
                 "good_latex": latex,
                 "good_pdf": result.pdf_path,
                 "compile_log": result.log,
+                "bibliography_bib": bib_content,
             }
 
         compile_log = result.log
@@ -389,12 +528,13 @@ async def review_node(state: GraphState) -> dict[str, Any]:
                     "message": f"Correzione errori (tentativo {attempt + 1})",
                     "progress": 84 + attempt * 2,
                     "level": "warning",
-                    "detail": _compile_error_excerpt(compile_log),
+                    "detail": compile_error_excerpt(compile_log),
                 },
             )
             latex = await review_document(latex, state["llm_config"], compile_log)
             if _settings.latex_lint:
                 latex, _ = lint_latex(latex)
+            latex, bib_content = _apply_bibliography(latex)
 
     # A judge revision failed to compile even after retries: roll back to the
     # last version that produced a PDF instead of shipping a broken document.
@@ -413,6 +553,7 @@ async def review_node(state: GraphState) -> dict[str, Any]:
             "final_latex": state["good_latex"],
             "pdf_path": state["good_pdf"],
             "compile_log": state.get("compile_log", ""),
+            "bibliography_bib": bib_content,
         }
 
     # Failed to compile after retries: still return the latex for inspection.
@@ -423,10 +564,15 @@ async def review_node(state: GraphState) -> dict[str, Any]:
             "message": "Compilazione non riuscita",
             "progress": 95,
             "level": "error",
-            "detail": _compile_error_excerpt(compile_log),
+            "detail": compile_error_excerpt(compile_log),
         },
     )
-    return {"final_latex": latex, "pdf_path": None, "compile_log": compile_log}
+    return {
+        "final_latex": latex,
+        "pdf_path": None,
+        "compile_log": compile_log,
+        "bibliography_bib": bib_content,
+    }
 
 
 async def judge_node(state: GraphState) -> dict[str, Any]:
@@ -434,6 +580,7 @@ async def judge_node(state: GraphState) -> dict[str, Any]:
     from app.core.config import settings as _settings
 
     rounds = state.get("judge_rounds", 0)
+    use_vision = bool(state.get("judge_vision", _settings.judge_vision))
     await _emit(
         state,
         {
@@ -442,7 +589,7 @@ async def judge_node(state: GraphState) -> dict[str, Any]:
             "progress": 90,
             "detail": (
                 "analisi visiva delle pagine"
-                if _settings.judge_vision
+                if use_vision
                 else "analisi di struttura e layout"
             ),
         },
@@ -453,6 +600,7 @@ async def judge_node(state: GraphState) -> dict[str, Any]:
         state["llm_config"],
         state.get("pdf_path"),
         state.get("compile_log"),
+        use_vision=use_vision,
     )
     if verdict.approved or not verdict.issues:
         await _emit(
@@ -520,13 +668,15 @@ def build_graph():
     graph.add_node("analyze", analyze_node)
     graph.add_node("plan", plan_node)
     graph.add_node("write", write_node)
+    graph.add_node("overview", overview_node)
     graph.add_node("review", review_node)
     graph.add_node("judge", judge_node)
 
     graph.add_edge(START, "analyze")
     graph.add_edge("analyze", "plan")
     graph.add_edge("plan", "write")
-    graph.add_edge("write", "review")
+    graph.add_edge("write", "overview")
+    graph.add_edge("overview", "review")
     graph.add_conditional_edges("review", _after_review, {"judge": "judge", END: END})
     graph.add_conditional_edges("judge", _after_judge, {"review": "review", END: END})
 
@@ -544,8 +694,11 @@ async def run_pipeline(
     metadata: dict[str, Any] | None = None,
     structure_hint: str = "",
     progress=None,
+    judge_vision: bool | None = None,
 ) -> dict[str, Any]:
     """Run the full pipeline and return the final state."""
+    from app.core.config import settings as _settings
+
     app = build_graph()
     initial: dict[str, Any] = {
         "documents": documents,
@@ -558,6 +711,11 @@ async def run_pipeline(
         "metadata": metadata or {},
         "structure_hint": structure_hint,
         "progress": progress,
+        "judge_vision": (
+            _settings.judge_vision if judge_vision is None else judge_vision
+        ),
     }
-    final = await app.ainvoke(initial)
+    # The produced keys (analyses/plan/sections/...) are filled in by the nodes;
+    # the initial state only carries the inputs, hence the cast.
+    final = await app.ainvoke(cast(GraphState, initial))
     return final

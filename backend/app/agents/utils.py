@@ -131,16 +131,29 @@ def _is_transient(exc: Exception) -> bool:
 
 
 async def _ainvoke_with_retry(model: Any, messages: list, label: str) -> Any:
-    """Invoke a model with bounded retries + exponential backoff and jitter."""
+    """Invoke a model with bounded retries + exponential backoff and jitter.
+
+    Each call is bounded by ``llm_request_timeout`` so a hung provider cannot
+    stall the whole run: a timeout is treated as a transient error and retried.
+    """
     attempts = max(1, settings.llm_max_retries)
+    timeout = settings.llm_request_timeout if settings.llm_request_timeout > 0 else None
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
             async with _SEMAPHORE:
-                return await model.ainvoke(messages)
-        except Exception as exc:  # noqa: BLE001 - decide retry vs. propagate
+                if timeout is None:
+                    return await model.ainvoke(messages)
+                return await asyncio.wait_for(model.ainvoke(messages), timeout=timeout)
+        except (Exception, asyncio.TimeoutError) as exc:  # noqa: BLE001
             last_exc = exc
-            transient = _is_transient(exc)
+            timed_out = isinstance(exc, asyncio.TimeoutError)
+            transient = timed_out or _is_transient(exc)
+            if timed_out:
+                exc = TimeoutError(  # nicer message than bare TimeoutError
+                    f"richiesta LLM oltre il timeout di {timeout}s"
+                )
+                last_exc = exc
             if attempt >= attempts or not transient:
                 logger.error(
                     "LLM '%s' fallito al tentativo %d/%d: %s",
@@ -319,3 +332,15 @@ def strip_latex_fences(text: str) -> str:
     if fenced:
         return fenced.group(1).strip()
     return text
+
+
+def compile_error_excerpt(log: str, max_lines: int = 6) -> str:
+    """Pull the most relevant error lines out of a pdflatex log for the UI."""
+    if not log:
+        return ""
+    lines = [ln for ln in log.splitlines() if ln.strip()]
+    errors = [
+        ln for ln in lines if ln.startswith("!") or "Error" in ln or "Undefined" in ln
+    ]
+    chosen = errors[:max_lines] or lines[-max_lines:]
+    return " | ".join(ln.strip()[:160] for ln in chosen)

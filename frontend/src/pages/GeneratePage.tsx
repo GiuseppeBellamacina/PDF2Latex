@@ -2,6 +2,9 @@ import {
   Download,
   ExternalLink,
   FileArchive,
+  Gavel,
+  Hammer,
+  Loader2,
   Play,
   Square,
 } from "lucide-react";
@@ -41,6 +44,15 @@ export default function GeneratePage() {
   }, [completed, id]);
 
   const provider = providers.find((p) => p.id === selectedProviderId);
+
+  // A run that ended without producing a PDF: offer manual recovery so the work
+  // already done (sections, structure) is not lost.
+  const runFailed =
+    !running &&
+    ((latest?.stage === "done" && !latest.pdf) ||
+      latest?.stage === "error" ||
+      (!latest && project?.status === "failed"));
+  const canRecover = runFailed && (project?.total_sections ?? 0) > 0;
 
   return (
     <div className="space-y-6">
@@ -112,10 +124,23 @@ export default function GeneratePage() {
           </div>
           <iframe
             title="PDF preview"
-            src={`${api.downloadUrl(id, "pdf")}#view=FitH`}
+            src={`${api.viewPdfUrl(id)}#view=FitH`}
             className="h-[70vh] w-full rounded-lg border border-ink-200 dark:border-ink-800"
           />
         </div>
+      )}
+
+      {canRecover && (
+        <RecoveryActions
+          projectId={id}
+          providerId={selectedProviderId}
+          onRecovered={() =>
+            api
+              .getProject(id)
+              .then(setProject)
+              .catch(() => {})
+          }
+        />
       )}
 
       {latest?.plan && latest.plan.length > 0 && (
@@ -129,6 +154,115 @@ export default function GeneratePage() {
             ))}
           </ul>
         </div>
+      )}
+    </div>
+  );
+}
+
+function RecoveryActions({
+  projectId,
+  providerId,
+  onRecovered,
+}: {
+  projectId: string;
+  providerId: number | null;
+  onRecovered: () => void;
+}) {
+  const [busy, setBusy] = useState<"recompile" | "rejudge" | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  async function recompile() {
+    if (providerId == null) return;
+    setBusy("recompile");
+    setMsg(null);
+    try {
+      const r = await api.recompile(projectId, { provider_id: providerId });
+      setMsg({
+        ok: r.success,
+        text: r.success
+          ? "Recompiled successfully — the document is ready."
+          : `Still failing: ${r.log_excerpt || "see logs"}`,
+      });
+      onRecovered();
+    } catch (e) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : "Failed" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function rejudge() {
+    if (providerId == null) return;
+    setBusy("rejudge");
+    setMsg(null);
+    try {
+      const r = await api.rejudge(projectId, { provider_id: providerId });
+      const text = r.applied
+        ? `Revision applied (${r.issues.length} issue(s)). ${
+            r.success ? "Recompiled." : "Recompile failed."
+          }`
+        : `Approved (score ${r.score}). No changes needed.`;
+      setMsg({ ok: r.success, text });
+      onRecovered();
+    } catch (e) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : "Failed" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="card space-y-3 border-amber-300 dark:border-amber-700">
+      <div>
+        <h2 className="text-sm font-semibold text-amber-600 dark:text-amber-400">
+          Run finished with errors
+        </h2>
+        <p className="mt-1 text-sm text-ink-500">
+          The generated sections were saved. Retry the compilation (with
+          automatic fixes) or run the judge again — no need to redo the whole
+          generation. You can also fix individual sections from the Preview
+          page.
+        </p>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          className="btn-primary"
+          onClick={recompile}
+          disabled={busy !== null || providerId == null}
+        >
+          {busy === "recompile" ? (
+            <Loader2 size={16} className="animate-spin" />
+          ) : (
+            <Hammer size={16} />
+          )}
+          Retry compilation
+        </button>
+        <button
+          className="btn-ghost"
+          onClick={rejudge}
+          disabled={busy !== null || providerId == null}
+        >
+          {busy === "rejudge" ? (
+            <Loader2 size={16} className="animate-spin" />
+          ) : (
+            <Gavel size={16} />
+          )}
+          Run judge
+        </button>
+        <Link className="btn-ghost" to={`/preview/${projectId}`}>
+          <ExternalLink size={16} /> Fix sections
+        </Link>
+      </div>
+      {msg && (
+        <p
+          className={
+            msg.ok
+              ? "text-xs text-emerald-600 dark:text-emerald-400"
+              : "text-xs text-amber-600 dark:text-amber-400"
+          }
+        >
+          {msg.text}
+        </p>
       )}
     </div>
   );

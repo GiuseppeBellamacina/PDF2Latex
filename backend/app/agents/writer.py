@@ -11,6 +11,7 @@ from app.agents.state import PlannedSection, WrittenSection
 from app.agents.utils import call_llm, strip_latex_fences
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.services.bibliography import strip_inline_bibliography, strip_unknown_citations
 from app.services.text_cleaning import outline_terms, select_relevant_chunks
 
 logger = get_logger("writer")
@@ -140,6 +141,7 @@ async def write_section(
     few_shot: str,
     language: str,
     llm_config: dict[str, Any],
+    available_refs: list[dict[str, str]] | None = None,
 ) -> WrittenSection:
     """Generate the LaTeX body for one planned section.
 
@@ -149,6 +151,9 @@ async def write_section(
     offered to the model and never reach the document. ``captions_by_path`` maps
     a figure path to the real caption extracted from the source PDF; when set it
     is bound to the figure and overrides whatever caption the model writes.
+    ``available_refs`` are the bibliographic references (with citation ``key``)
+    drawn from this section's sources, offered to the model so it can insert
+    ``\\cite{key}`` where genuinely relevant.
     """
     outline_json = json.dumps(section["outline"], ensure_ascii=False, indent=2)
 
@@ -204,6 +209,21 @@ async def write_section(
             "nessun'altra figura e non inventare ID.\n" + listed
         )
 
+    refs = available_refs or []
+    known_keys = {r["key"] for r in refs if r.get("key")}
+    refs_part = ""
+    if refs:
+        ref_lines = []
+        for r in refs:
+            descr = ", ".join(
+                x for x in (r.get("authors"), r.get("title"), r.get("year")) if x
+            )
+            ref_lines.append(f"- {r['key']}: {descr}")
+        refs_part = (
+            "\n\nRIFERIMENTI CITABILI (usa \\cite{chiave} solo dove pertinente, "
+            "solo queste chiavi):\n" + "\n".join(ref_lines)
+        )
+
     user = (
         f"Lingua: {language}\n"
         f"Parte: {section['part_title']}\n"
@@ -211,6 +231,7 @@ async def write_section(
         f"Outline:\n{outline_json}\n\n"
         f"Materiale sorgente:\n{source_text}"
         f"{figures_part}"
+        f"{refs_part}"
         f"{fewshot_part}"
     )
 
@@ -223,6 +244,10 @@ async def write_section(
     )
     latex = strip_latex_fences(raw)
     latex = expand_figrefs(latex, id_to_path, mandatory_ids, id_to_caption)
+    # Drop any bibliography the model added inline and any citation to a key it
+    # was not offered, so only the single end-of-document bibliography remains.
+    latex = strip_inline_bibliography(latex)
+    latex = strip_unknown_citations(latex, known_keys)
     logger.info(
         "Sezione scritta: '%s' (%d caratteri, %d figure obbligatorie)",
         section["title"],
@@ -235,4 +260,6 @@ async def write_section(
         part_title=section["part_title"],
         order_index=section["order_index"],
         latex=latex,
+        outline=section.get("outline", {}),
+        source_filenames=list(section.get("source_filenames", [])),
     )

@@ -32,6 +32,7 @@ class Settings(BaseSettings):
 
     # LaTeX
     pdflatex_bin: str = "pdflatex"
+    bibtex_bin: str = "bibtex"
     latex_compile_passes: int = 2
     latex_lint: bool = True  # deterministic repair pass before pdflatex
 
@@ -98,6 +99,13 @@ class Settings(BaseSettings):
     max_figures_per_section: int = 4  # hard cap of figures rendered per section
     figure_width_ratio: float = 0.62  # \includegraphics width as fraction of line
     figure_max_height_ratio: float = 0.42  # cap height as fraction of \textheight
+
+    # Chapter overview: when the document spans several chapters (or merges more
+    # than one source), prepend a short "panoramica" right after the table of
+    # contents with a 2-3 sentence synopsis of every chapter, so the reader gets
+    # the gist before diving into the chapters themselves.
+    overview_enabled: bool = True
+    overview_min_chapters: int = 3  # also triggered when len(documents) > 1
 
     # Defaults
     default_language: str = "italian"

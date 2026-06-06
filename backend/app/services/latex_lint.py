@@ -16,6 +16,36 @@ _FIGREF_RE = re.compile(r"\\figref\b")
 # Matches both \begin{env} and \end{env} so we can walk them in document order.
 _ENV_RE = re.compile(r"\\(begin|end)\{([A-Za-z*]+)\}")
 
+# Sectioning commands whose title the model sometimes prefixes with a manual
+# number ("Capitolo 2: ...") even though LaTeX numbers them on its own.
+_HEADING_RE = re.compile(r"(\\(?:part|chapter|section|subsection)\*?\{)([^}]*)(\})")
+_LEADING_NUMBER_RE = re.compile(
+    r"^\s*(?:capitolo|chapter|parte|part|sezione|section|cap\.?|sec\.?)?\s*"
+    r"\d+(?:\.\d+)*\s*[:.\)\u2013\u2014-]\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_heading_numbering(tex: str) -> tuple[str, int]:
+    """Remove a manual ``Capitolo N:`` / ``2.`` prefix from sectioning titles.
+
+    LaTeX numbers ``\\chapter``/``\\section`` automatically, so a title like
+    ``Capitolo 2: Introduzione`` renders as ``Chapter 2 Capitolo 2:
+    Introduzione``. The leading manual numbering is stripped from each heading.
+    """
+    count = 0
+
+    def repl(match: re.Match) -> str:
+        nonlocal count
+        title = match.group(2)
+        cleaned = _LEADING_NUMBER_RE.sub("", title).strip()
+        if cleaned and cleaned != title.strip():
+            count += 1
+            return match.group(1) + cleaned + match.group(3)
+        return match.group(0)
+
+    return _HEADING_RE.sub(repl, tex), count
+
 
 def _strip_unresolved_figrefs(tex: str) -> tuple[str, int]:
     """Remove any leftover ``\\figref`` tokens (should already be expanded)."""
@@ -118,6 +148,10 @@ def lint_latex(tex: str) -> tuple[str, list[str]]:
     tex, n_figref = _strip_unresolved_figrefs(tex)
     if n_figref:
         notes.append(f"rimossi {n_figref} \\figref non risolti")
+
+    tex, n_heading = _strip_heading_numbering(tex)
+    if n_heading:
+        notes.append(f"rimossa numerazione manuale da {n_heading} titoli")
 
     tex, env_notes = _balance_environments(tex)
     notes.extend(env_notes)
