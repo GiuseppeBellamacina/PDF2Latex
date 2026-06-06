@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     extractor_backend: str = "hybrid"  # hybrid | pymupdf | docling
     enable_ocr: bool = False
     ocr_lang: str = "ita+eng"  # tesseract language(s); '+' to combine
+    # Explicit path to the tesseract executable. Leave empty to auto-detect:
+    # the app looks on PATH and in the standard Windows install locations
+    # (e.g. C:\Program Files\Tesseract-OCR\tesseract.exe).
+    tesseract_cmd: str = ""
     render_dpi: int = 130
     # Docling renders every page through ML layout models; on large PDFs this
     # exhausts memory (std::bad_alloc). The hybrid backend therefore runs

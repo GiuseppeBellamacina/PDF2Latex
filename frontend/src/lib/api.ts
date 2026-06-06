@@ -139,14 +139,21 @@ export const api = {
     api_key?: string | null;
     base_url?: string | null;
   }) =>
-    req<{ success: boolean; response?: string; error?: string }>(
-      "/providers/test",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      },
-    ),
+    req<{
+      success: boolean;
+      stage?: string;
+      error?: string;
+      error_type?: string;
+      latency_ms?: number;
+      model?: string;
+      followed_instruction?: boolean;
+      response?: string;
+      tokens?: { input: number; output: number; total: number } | null;
+    }>("/providers/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }),
 
   // Projects
   listProjects: () => req<ProjectSummary[]>("/projects"),

@@ -282,15 +282,33 @@ def write_and_compile(
     work_dir: Path,
     figures_src: Path | None = None,
     job_name: str = "main",
+    allowed_figures: set[str] | None = None,
 ) -> CompileResult:
-    """Write ``tex_content`` into ``work_dir`` and compile it with pdflatex."""
+    """Write ``tex_content`` into ``work_dir`` and compile it with pdflatex.
+
+    ``allowed_figures`` (basenames) restricts which images are copied into the
+    project: only those are placed in ``work_dir/figures``, so unselected
+    figures can never appear in the PDF nor in the downloadable zip. The figures
+    folder is rebuilt each run to drop anything left by a previous run.
+    """
     work_dir.mkdir(parents=True, exist_ok=True)
     tex_path = work_dir / f"{job_name}.tex"
 
-    if figures_src and figures_src.exists():
-        dest = work_dir / "figures"
-        if dest.resolve() != figures_src.resolve():
-            shutil.copytree(figures_src, dest, dirs_exist_ok=True)
+    dest = work_dir / "figures"
+    if figures_src and figures_src.exists() and dest.resolve() != figures_src.resolve():
+        if dest.exists():
+            shutil.rmtree(dest, ignore_errors=True)
+        dest.mkdir(parents=True, exist_ok=True)
+        allowed_lower = (
+            {a.lower() for a in allowed_figures}
+            if allowed_figures is not None
+            else None
+        )
+        for p in figures_src.iterdir():
+            if not p.is_file():
+                continue
+            if allowed_lower is None or p.name.lower() in allowed_lower:
+                shutil.copy2(p, dest / p.name)
 
     # Drop/fix references to figures that do not exist so a single hallucinated
     # \includegraphics cannot abort the whole compilation.

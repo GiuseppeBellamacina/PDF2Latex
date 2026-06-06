@@ -73,14 +73,26 @@ introduzioni che appartengono ad altre sezioni.
 ogni parentesi graffa siano correttamente aperti e chiusi.
 - Se nel materiale sorgente sono presenti tabelle (anche in markdown), riproducile con \
 l'ambiente tabular + booktabs quando sono pertinenti.
-- Spiega i concetti in modo chiaro, rigoroso e discorsivo, non a elenco puntato secco.
+- Alterna prosa e formattazione strutturata per rendere il testo leggibile e ben \
+impaginato:
+  * usa elenchi puntati (itemize) o numerati (enumerate) per sequenze, passaggi, \
+proprietà, vantaggi/svantaggi o elenchi di elementi;
+  * usa l'ambiente description per coppie termine–definizione e glossari;
+  * evidenzia i termini chiave con \\textbf{...} e usa \\emph{...} per enfasi o per \
+i termini introdotti la prima volta;
+  * usa \\paragraph{...} per micro-sottosezioni e blocchi come quote/itemize dove \
+migliorano la struttura.
+  Non ridurre tutto a elenchi secchi: spiega i concetti con testo discorsivo e \
+rigoroso, e usa gli elenchi e l'evidenziazione SOLO dove migliorano davvero la \
+chiarezza e l'organizzazione della pagina.
 - Per inserire una figura NON usare mai \\includegraphics o l'ambiente figure e NON \
 scrivere percorsi di file. Usa ESCLUSIVAMENTE il comando:
   \\figref{ID}{Didascalia descrittiva}
-  dove ID \u00e8 uno degli identificatori elencati nel materiale (campo "Figure \
-disponibili"/"Figure OBBLIGATORIE"). Inserisci il comando su una riga a s\u00e9. Usa solo \
-gli ID elencati: qualunque ID non in elenco verr\u00e0 ignorato. Inserisci solo le figure \
-pertinenti.
+  dove ID \u00e8 uno degli identificatori elencati nel campo "FIGURE DA INSERIRE". \
+Inserisci il comando su una riga a s\u00e9. Devi inserire TUTTE e SOLE le figure \
+elencate l\u00ec: non aggiungerne altre e non inventare ID (gli ID non in elenco \
+vengono ignorati). Colloca ogni figura vicino al testo pi\u00f9 pertinente e dalle una \
+didascalia breve e coerente con quel testo.
 - Mantieni coerenza terminologica nella lingua di destinazione.
 
 Restituisci esclusivamente il codice LaTeX della sezione."""

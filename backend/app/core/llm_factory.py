@@ -71,14 +71,71 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
 
 
 async def test_llm_connection(config: LLMConfig) -> dict[str, Any]:
-    """Try a tiny generation to validate provider credentials/connectivity."""
+    """Run a small real generation to validate a provider and report details.
+
+    Returns a rich result: whether the round-trip worked, how long it took, the
+    model that actually answered, the reply text, a sanity check that the model
+    followed a tiny instruction, and token usage when the provider reports it.
+    """
+    import time
+
+    prompt = (
+        "You are validating an API connection. "
+        "Reply with exactly this phrase and nothing else: PDF2LATEX_OK"
+    )
     try:
         llm = create_llm(config)
-        result = await llm.ainvoke("Reply with the single word: ok")
-        text = getattr(result, "content", str(result))
-        return {"success": True, "response": str(text)[:200]}
+    except Exception as exc:  # noqa: BLE001 - configuration/build error
+        return {
+            "success": False,
+            "stage": "setup",
+            "error": str(exc),
+        }
+
+    start = time.perf_counter()
+    try:
+        result = await llm.ainvoke(prompt)
     except Exception as exc:  # noqa: BLE001 - surface any provider error to the UI
-        return {"success": False, "error": str(exc)}
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        return {
+            "success": False,
+            "stage": "request",
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "latency_ms": latency_ms,
+        }
+
+    latency_ms = int((time.perf_counter() - start) * 1000)
+    text = str(getattr(result, "content", result)).strip()
+
+    # Did the model follow the instruction? (informational, not a hard failure)
+    followed = "PDF2LATEX_OK" in text.upper()
+
+    # Best-effort model + token usage extraction across providers.
+    meta = getattr(result, "response_metadata", {}) or {}
+    usage = getattr(result, "usage_metadata", None) or {}
+    model_name = (
+        meta.get("model_name")
+        or meta.get("model")
+        or getattr(result, "model", None)
+        or config.model
+    )
+    tokens: dict[str, int] | None = None
+    if usage:
+        tokens = {
+            "input": usage.get("input_tokens", 0),
+            "output": usage.get("output_tokens", 0),
+            "total": usage.get("total_tokens", 0),
+        }
+
+    return {
+        "success": True,
+        "latency_ms": latency_ms,
+        "model": model_name,
+        "followed_instruction": followed,
+        "response": text[:300],
+        "tokens": tokens,
+    }
 
 
 # --------------------------------------------------------------------------- #

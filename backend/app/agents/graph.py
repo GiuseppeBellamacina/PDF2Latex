@@ -177,18 +177,20 @@ async def write_node(state: GraphState) -> dict[str, Any]:
     documents_by_name = {
         d["filename"]: d.get("full_text", "") for d in state["documents"]
     }
-    figures_by_name = {d["filename"]: d.get("figures", []) for d in state["documents"]}
     mandatory_by_name = {
         d["filename"]: d.get("mandatory_figures", []) for d in state["documents"]
     }
-    # Assign each mandatory figure to exactly one section (round-robin across the
-    # sections that use its source) so no image is forced into many sections.
-    assigned_mandatory = _assign_mandatory_to_sections(plan, mandatory_by_name)
-    # Aggregate every figure's OCR caption so the writer knows what each ID
-    # actually depicts when deciding which to include.
+    # Real captions extracted from the source PDFs, keyed by figure path. These
+    # are bound to the figures so captions can never be swapped or mismatched.
     captions_by_path: dict[str, str] = {}
     for d in state["documents"]:
-        captions_by_path.update(d.get("figure_captions", {}) or {})
+        for rel, cap in (d.get("figure_captions") or {}).items():
+            if cap:
+                captions_by_path[rel] = cap
+    # Assign each user-selected figure to exactly one section (round-robin across
+    # the sections that use its source). Only these figures may appear; nothing
+    # else is offered to the writer.
+    assigned_mandatory = _assign_mandatory_to_sections(plan, mandatory_by_name)
     few_shot = state.get("few_shot", "")
     language = state.get("language", "italian")
     llm_config = state["llm_config"]
@@ -206,7 +208,6 @@ async def write_node(state: GraphState) -> dict[str, Any]:
         result = await write_section(
             section,
             documents_by_name,
-            figures_by_name,
             assigned_mandatory[idx],
             captions_by_path,
             few_shot,
@@ -338,10 +339,21 @@ async def review_node(state: GraphState) -> dict[str, Any]:
     figures_src = state.get("figures_dir")
     figures_path = Path(figures_src) if figures_src else None
 
+    # Only the user-selected figures may reach the PDF and the downloadable zip.
+    allowed_figures = {
+        Path(rel).name
+        for d in state["documents"]
+        for rel in d.get("mandatory_figures", [])
+    }
+
     compile_log = ""
     for attempt in range(MAX_REVIEW_RETRIES + 1):
         result = write_and_compile(
-            latex, work_dir, figures_src=figures_path, job_name="main"
+            latex,
+            work_dir,
+            figures_src=figures_path,
+            job_name="main",
+            allowed_figures=allowed_figures,
         )
         if result.success:
             await _emit(

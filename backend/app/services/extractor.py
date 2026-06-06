@@ -91,31 +91,32 @@ def _score_figure(width: int, height: int, caption: str) -> tuple[float, bool]:
     words = len(caption.split())
 
     score = 0.0
-    # Size: too small = decorative; medium/large = likely meaningful; enormous
-    # images are often full-slide screenshots (still useful but less certain).
+    # Size is the primary signal and must be enough ON ITS OWN to recommend a
+    # clearly substantial figure even when OCR is unavailable (no caption text).
     if min_side < 110:
-        score += 0.0
+        score += 0.0  # decorative icon/logo
     elif min_side < 200:
-        score += 0.25
+        score += 0.35
     elif min_side < 1000:
-        score += 0.4
+        score += 0.6  # a solid content figure -> already recommendable
     else:
-        score += 0.3
+        score += 0.5  # very large (often a full-slide screenshot)
 
-    # Aspect ratio: diagram/chart-like shapes get a bonus; banners/thin rules
-    # (very elongated) are penalised.
+    # Aspect ratio: diagram/chart-like shapes get a small bonus; banners/thin
+    # rules (very elongated) are penalised out of the recommendation.
     if 1.15 <= aspect <= 2.8:
         score += 0.12
     elif aspect > 4.0:
-        score -= 0.18
+        score -= 0.3
 
-    # OCR text is the strongest positive signal (charts/diagrams have labels).
+    # OCR text, when available, reinforces (charts/diagrams carry labels) but is
+    # no longer required to cross the threshold.
     if words >= 6:
-        score += 0.5
+        score += 0.28
     elif words >= 2:
-        score += 0.3
+        score += 0.18
     elif words >= 1:
-        score += 0.12
+        score += 0.08
 
     score = round(max(0.0, min(score, 1.0)), 3)
     return score, score >= 0.55
@@ -127,9 +128,103 @@ def _clean_caption(text: str) -> str:
     return flat[:160]
 
 
+# Leading "Figura 3:", "Fig. 2 -", "Tabella 1.", "Schema 4)", etc. in many
+# languages. Used both to recognise a caption block and to strip its label so
+# LaTeX's own "Figura N:" prefix isn't duplicated.
+_CAPTION_LABEL_RE = re.compile(
+    r"^\s*(?:fig(?:ura|ure|\.)?|tab(?:ella|le|\.)?|grafico|graph|chart|"
+    r"schema|scheme|immagine|image|diagramma|diagram|plot|"
+    r"esempio|example)\s*\.?\s*\d{0,3}\s*[\.:)\u2013\u2014\-]?\s*",
+    re.IGNORECASE,
+)
+
+
+def _find_pdf_caption(page, rect, max_gap: float = 90.0) -> str:  # noqa: ANN001
+    """Find the real caption text laid out near a figure in the source PDF.
+
+    This reads the actual page text near the image's bounding box instead of
+    OCR-ing the pixels inside the image. A text block immediately BELOW the
+    figure (preferred) or ABOVE it, that horizontally overlaps it, is taken as
+    the caption. Blocks beginning with a caption keyword (``Figura 3:`` …) win;
+    otherwise the closest short block below the image is used. The keyword label
+    is stripped (LaTeX adds its own ``Figura N:``). Returns ``""`` when nothing
+    plausible is found, so the caller can fall back to OCR / the model.
+    """
+    try:
+        blocks = page.get_text("blocks")
+    except Exception:  # noqa: BLE001 - layout text is best-effort
+        return ""
+
+    ix0, iy0, ix1, iy1 = rect.x0, rect.y0, rect.x1, rect.y1
+    iw = max(ix1 - ix0, 1.0)
+    best: tuple[int, float, str, bool] | None = None  # (priority, gap, text, kw)
+    for b in blocks:
+        if len(b) < 5:
+            continue
+        bx0, by0, bx1, by1, raw = b[0], b[1], b[2], b[3], b[4]
+        text = re.sub(r"\s+", " ", str(raw)).strip()
+        if len(text) < 3 or len(text) > 400:
+            continue
+        # Require meaningful horizontal overlap with the figure.
+        overlap = max(0.0, min(ix1, bx1) - max(ix0, bx0))
+        if overlap / iw < 0.30:
+            continue
+        below_gap = by0 - iy1
+        above_gap = iy0 - by1
+        if 0 <= below_gap <= max_gap:
+            gap, below = below_gap, True
+        elif 0 <= above_gap <= max_gap:
+            gap, below = above_gap, False
+        else:
+            continue
+        keyword = bool(_CAPTION_LABEL_RE.match(text))
+        # Keyword captions below the image are the strongest signal.
+        priority = (0 if below else 1) if keyword else (2 if below else 3)
+        cand = (priority, gap, text, keyword)
+        if best is None or (cand[0], cand[1]) < (best[0], best[1]):
+            best = cand
+
+    if best is None:
+        return ""
+    _, _, text, keyword = best
+    if keyword:
+        text = _CAPTION_LABEL_RE.sub("", text, count=1).strip()
+    return _clean_caption(text)
+
+
 # --------------------------------------------------------------------------- #
 # OCR                                                                           #
 # --------------------------------------------------------------------------- #
+def _resolve_tesseract_cmd() -> str | None:
+    """Find the tesseract executable: explicit setting -> PATH -> common dirs.
+
+    On Windows the winget/UB-Mannheim installer adds tesseract to PATH, but a
+    process started before the install (or a service) won't see the updated
+    PATH. So we also probe the standard install locations and, when found, point
+    pytesseract straight at the binary.
+    """
+    import shutil
+
+    candidates: list[str] = []
+    if settings.tesseract_cmd:
+        candidates.append(settings.tesseract_cmd)
+    on_path = shutil.which("tesseract")
+    if on_path:
+        candidates.append(on_path)
+    candidates += [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        str(Path.home() / "AppData/Local/Programs/Tesseract-OCR/tesseract.exe"),
+        "/usr/bin/tesseract",
+        "/usr/local/bin/tesseract",
+        "/opt/homebrew/bin/tesseract",
+    ]
+    for cand in candidates:
+        if cand and Path(cand).exists():
+            return cand
+    return on_path  # may be None
+
+
 def tesseract_available() -> bool:
     """Return (and cache) whether the tesseract OCR engine is usable."""
     global _TESSERACT_OK
@@ -138,9 +233,17 @@ def tesseract_available() -> bool:
     try:
         import pytesseract  # type: ignore
 
+        # Point pytesseract at the resolved binary if it isn't already on PATH.
+        cmd = _resolve_tesseract_cmd()
+        if cmd:
+            pytesseract.pytesseract.tesseract_cmd = cmd
+
         version = pytesseract.get_tesseract_version()
         logger.info(
-            "OCR disponibile: tesseract %s (lingua=%s)", version, settings.ocr_lang
+            "OCR disponibile: tesseract %s (%s, lingua=%s)",
+            version,
+            cmd or "su PATH",
+            settings.ocr_lang,
         )
         _TESSERACT_OK = True
     except Exception as exc:  # noqa: BLE001 - any failure means OCR is unusable
@@ -148,7 +251,8 @@ def tesseract_available() -> bool:
             "OCR non disponibile: %s. Installa il binario Tesseract "
             "(Windows: 'winget install UB-Mannheim.TesseractOCR' oppure "
             "https://github.com/UB-Mannheim/tesseract/wiki) e assicurati che "
-            "'tesseract' sia nel PATH; per le lingue installa i language pack "
+            "'tesseract' sia nel PATH (oppure imposta PDF2TEX_TESSERACT_CMD col "
+            "percorso a tesseract.exe); per le lingue installa i language pack "
             "(es. ita, eng). Variabile: PDF2TEX_OCR_LANG=%s",
             exc,
             settings.ocr_lang,
@@ -344,10 +448,26 @@ class PyMuPDFExtractor(BaseExtractor):
                     pix = fitz.Pixmap(fitz.csRGB, pix)
                 fig_path = figures_dir / f"fig_{slug}_p{page_no:03d}_{idx}.png"
                 pix.save(fig_path)
-                caption = ""
-                if ocr_figures:
-                    caption = _clean_caption(_ocr_image(fig_path))
-                score, suggested = _score_figure(pix.width, pix.height, caption)
+                # Prefer the REAL caption laid out next to the figure in the
+                # PDF; this binds a correct caption to the image and avoids the
+                # swapped/wrong captions produced by OCR-ing the pixels.
+                rect = None
+                try:
+                    rects = page.get_image_rects(xref)
+                    if rects:
+                        rect = rects[0]
+                except Exception:  # noqa: BLE001 - rect lookup is best-effort
+                    rect = None
+                pdf_caption = _find_pdf_caption(page, rect) if rect is not None else ""
+                ocr_text = _ocr_image(fig_path) if ocr_figures else ""
+                caption = pdf_caption or _clean_caption(ocr_text)
+                # Score with whatever label text we have; a caption laid out
+                # next to the image is itself evidence of a real content figure.
+                score, suggested = _score_figure(
+                    pix.width, pix.height, ocr_text or pdf_caption
+                )
+                if pdf_caption:
+                    suggested = suggested or score >= 0.45
                 out.append(
                     FigureInfo(
                         rel_path=f"figures/{fig_path.name}",

@@ -11,13 +11,15 @@ interface Props {
 /**
  * Drag-and-drop reorderable list of PDFs with a smooth swap animation.
  *
- * Reordering happens live while dragging over another row, and the rows slide
- * into their new position using the FLIP technique (measure -> invert ->
- * play) so no animation library is needed.
+ * Reordering happens live while dragging, using midpoint detection so a row is
+ * only moved once the cursor crosses the centre of its neighbour. This (plus a
+ * ref tracking the dragged index) prevents the rapid back-and-forth swapping
+ * that otherwise flickers when the rows animate under the cursor. Rows slide
+ * into place using the FLIP technique (measure -> invert -> play), no library.
  */
 export default function SourceReorder({ sources, onReorder }: Props) {
   const [dragId, setDragId] = useState<number | null>(null);
-  const [overId, setOverId] = useState<number | null>(null);
+  const dragIndex = useRef<number | null>(null);
   const rowRefs = useRef<Map<number, HTMLLIElement>>(new Map());
   const prevRects = useRef<Map<number, DOMRect>>(new Map());
 
@@ -30,12 +32,12 @@ export default function SourceReorder({ sources, onReorder }: Props) {
       const next = el.getBoundingClientRect();
       if (prev) {
         const dy = prev.top - next.top;
-        if (dy) {
+        if (Math.abs(dy) > 1) {
           el.style.transition = "none";
           el.style.transform = `translateY(${dy}px)`;
           // Force reflow then play to the resting position.
           void el.offsetHeight;
-          el.style.transition = "transform 220ms cubic-bezier(0.2, 0, 0, 1)";
+          el.style.transition = "transform 200ms cubic-bezier(0.2, 0, 0, 1)";
           el.style.transform = "";
         }
       }
@@ -43,15 +45,36 @@ export default function SourceReorder({ sources, onReorder }: Props) {
     });
   }, [sources]);
 
-  function move(fromId: number, toId: number) {
-    if (fromId === toId) return;
-    const from = sources.findIndex((s) => s.id === fromId);
-    const to = sources.findIndex((s) => s.id === toId);
-    if (from < 0 || to < 0) return;
+  function moveByIndex(from: number, to: number) {
+    if (from === to) return;
     const next = [...sources];
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
     onReorder(next);
+  }
+
+  /**
+   * While hovering row `overIndex`, move the dragged row past it only once the
+   * cursor crosses the row's midpoint in the direction of travel. The midpoint
+   * gate + index ref stop the swap from oscillating (the flicker).
+   */
+  function handleDragOver(e: React.DragEvent, overIndex: number) {
+    e.preventDefault();
+    const from = dragIndex.current;
+    if (from === null || from === overIndex) return;
+
+    const el = rowRefs.current.get(sources[overIndex].id);
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const midpoint = rect.top + rect.height / 2;
+
+    // Dragging downward: only move past a row once below its midpoint.
+    if (from < overIndex && e.clientY < midpoint) return;
+    // Dragging upward: only move past a row once above its midpoint.
+    if (from > overIndex && e.clientY > midpoint) return;
+
+    moveByIndex(from, overIndex);
+    dragIndex.current = overIndex;
   }
 
   return (
@@ -68,26 +91,21 @@ export default function SourceReorder({ sources, onReorder }: Props) {
             draggable
             onDragStart={(e) => {
               setDragId(s.id);
+              dragIndex.current = i;
               e.dataTransfer.effectAllowed = "move";
               e.dataTransfer.setData("text/plain", String(s.id));
             }}
-            onDragEnter={() => {
-              setOverId(s.id);
-              if (dragId !== null) move(dragId, s.id);
-            }}
-            onDragOver={(e) => e.preventDefault()}
+            onDragOver={(e) => handleDragOver(e, i)}
             onDragEnd={() => {
               setDragId(null);
-              setOverId(null);
+              dragIndex.current = null;
             }}
             className={cn(
               "flex items-center gap-3 rounded-lg border bg-ink-900/40 px-3 py-2",
               "will-change-transform",
               dragging
                 ? "border-emerald-500/70 opacity-60 shadow-lg ring-2 ring-emerald-500/30"
-                : overId === s.id
-                  ? "border-emerald-500/50"
-                  : "border-ink-800/60",
+                : "border-ink-800/60",
             )}
           >
             <span

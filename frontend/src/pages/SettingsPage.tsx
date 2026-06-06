@@ -1,7 +1,18 @@
-import { Check, Plus, Trash2, X, Zap } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  Clock,
+  Cpu,
+  Plus,
+  Trash2,
+  X,
+  Zap,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, type Provider, type ProviderInput } from "../lib/api";
 import { useAppStore } from "../stores/appStore";
+
+type TestResult = Awaited<ReturnType<typeof api.testProvider>>;
 
 const PROVIDER_TYPES = ["openai", "anthropic", "ollama", "custom", "fake"];
 
@@ -17,7 +28,7 @@ const EMPTY: ProviderInput = {
 export default function SettingsPage() {
   const { providers, loadProviders } = useAppStore();
   const [form, setForm] = useState<ProviderInput>(EMPTY);
-  const [testResult, setTestResult] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -51,7 +62,7 @@ export default function SettingsPage() {
         api_key: form.api_key,
         base_url: form.base_url,
       });
-      setTestResult(r.success ? `OK: ${r.response}` : `Error: ${r.error}`);
+      setTestResult(r);
     } finally {
       setBusy(false);
     }
@@ -137,9 +148,7 @@ export default function SettingsPage() {
           )}
         </div>
 
-        {testResult && (
-          <p className="text-sm text-ink-600 dark:text-ink-400">{testResult}</p>
-        )}
+        {testResult && <TestResultCard result={testResult} />}
 
         <div className="flex gap-2">
           <button className="btn-ghost" onClick={test} disabled={busy}>
@@ -182,6 +191,71 @@ export default function SettingsPage() {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function TestResultCard({ result }: { result: TestResult }) {
+  if (!result.success) {
+    return (
+      <div className="rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm dark:border-red-900/60 dark:bg-red-950/30">
+        <div className="flex items-center gap-2 font-medium text-red-700 dark:text-red-300">
+          <AlertTriangle size={16} />
+          Connection failed
+          {result.stage && (
+            <span className="text-xs font-normal text-red-500">
+              ({result.stage})
+            </span>
+          )}
+        </div>
+        <p className="mt-1 break-words text-red-600 dark:text-red-300/90">
+          {result.error_type ? `${result.error_type}: ` : ""}
+          {result.error}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm dark:border-emerald-900/60 dark:bg-emerald-950/30">
+      <div className="flex items-center gap-2 font-medium text-emerald-700 dark:text-emerald-300">
+        <Check size={16} />
+        Connection OK
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-600 dark:text-ink-300">
+        {result.model && (
+          <span className="inline-flex items-center gap-1">
+            <Cpu size={13} /> {result.model}
+          </span>
+        )}
+        {result.latency_ms != null && (
+          <span className="inline-flex items-center gap-1">
+            <Clock size={13} /> {result.latency_ms} ms
+          </span>
+        )}
+        {result.tokens && (
+          <span>
+            tokens: {result.tokens.input}→{result.tokens.output} (
+            {result.tokens.total} total)
+          </span>
+        )}
+        <span
+          className={
+            result.followed_instruction
+              ? "text-emerald-600 dark:text-emerald-400"
+              : "text-amber-600 dark:text-amber-400"
+          }
+        >
+          {result.followed_instruction
+            ? "instruction followed"
+            : "answered, but didn't follow instruction"}
+        </span>
+      </div>
+      {result.response && (
+        <p className="mt-2 rounded-lg bg-white/60 px-2 py-1 font-mono text-xs text-ink-700 dark:bg-black/20 dark:text-ink-200">
+          {result.response}
+        </p>
+      )}
     </div>
   );
 }

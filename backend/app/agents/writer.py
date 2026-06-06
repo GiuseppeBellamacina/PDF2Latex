@@ -74,14 +74,19 @@ def expand_figrefs(
     latex: str,
     id_to_path: dict[str, str],
     mandatory_ids: list[str],
+    id_to_caption: dict[str, str] | None = None,
 ) -> str:
     """Deterministically turn ``\\figref{ID}{caption}`` into real figure blocks.
 
     IDs are resolved against the real extracted figures; unknown IDs are simply
     dropped (no hallucinated path can reach the document). Every mandatory
     figure is guaranteed: any not referenced by the model is appended at the
-    end of the section.
+    end of the section. When a real caption was extracted from the source PDF
+    for a figure, it OVERRIDES the model-written caption: the caption is bound
+    to the image deterministically, so figures and captions can never be
+    swapped or mismatched.
     """
+    id_to_caption = id_to_caption or {}
     out: list[str] = []
     used: set[str] = set()
     token = "\\figref"
@@ -101,10 +106,13 @@ def expand_figrefs(
             caption = ""
             if j < n and latex[j] == "{":
                 caption, j = _read_brace_arg(latex, j)
-            path = id_to_path.get(fid.strip())
+            key = fid.strip()
+            path = id_to_path.get(key)
             if path:
-                used.add(fid.strip())
-                out.append(_figure_block(path, caption))
+                used.add(key)
+                # Real PDF caption wins; fall back to the model's caption.
+                final_caption = id_to_caption.get(key, "").strip() or caption
+                out.append(_figure_block(path, final_caption))
             # Unknown ID -> drop silently.
             i = j
         else:
@@ -117,7 +125,9 @@ def expand_figrefs(
         m for m in dict.fromkeys(mandatory_ids) if m not in used and m in id_to_path
     ]
     if missing:
-        blocks = [_figure_block(id_to_path[m], "") for m in missing]
+        blocks = [
+            _figure_block(id_to_path[m], id_to_caption.get(m, "")) for m in missing
+        ]
         result = result.rstrip() + "\n\n" + "\n\n".join(blocks) + "\n"
     return result
 
@@ -125,7 +135,6 @@ def expand_figrefs(
 async def write_section(
     section: PlannedSection,
     documents_by_name: dict[str, str],
-    figures_by_name: dict[str, list[str]],
     assigned_mandatory: list[str],
     captions_by_path: dict[str, str],
     few_shot: str,
@@ -134,9 +143,12 @@ async def write_section(
 ) -> WrittenSection:
     """Generate the LaTeX body for one planned section.
 
-    ``assigned_mandatory`` is the list of figure paths assigned to THIS section
-    (each mandatory figure is assigned to exactly one section upstream, so no
-    image is forced into multiple sections).
+    ``assigned_mandatory`` is the list of user-selected figure paths assigned to
+    THIS section (each selected figure is assigned to exactly one section
+    upstream). ONLY these figures may appear: unselected figures are never
+    offered to the model and never reach the document. ``captions_by_path`` maps
+    a figure path to the real caption extracted from the source PDF; when set it
+    is bound to the figure and overrides whatever caption the model writes.
     """
     outline_json = json.dumps(section["outline"], ensure_ascii=False, indent=2)
 
@@ -145,33 +157,29 @@ async def write_section(
     # most relevant ones up to the budget.
     terms = outline_terms(section["title"], section.get("outline", {}))
     source_text = ""
-    figures: list[str] = []
     n_sources = len(section["source_filenames"]) or 1
     per_source_budget = max(2000, settings.writer_source_chars // n_sources)
     for fname in section["source_filenames"]:
         chunk = documents_by_name.get(fname, "")
         if chunk:
-            selected = select_relevant_chunks(chunk, terms, per_source_budget)
-            source_text += f"\n--- {fname} ---\n{selected}\n"
-        figures.extend(figures_by_name.get(fname, []))
+            selected_src = select_relevant_chunks(chunk, terms, per_source_budget)
+            source_text += f"\n--- {fname} ---\n{selected_src}\n"
 
-    # Cap how many mandatory figures land in a single section so a slide-heavy
-    # source cannot flood it; the rest were assigned to other sections upstream.
-    mandatory = list(dict.fromkeys(assigned_mandatory))[
+    # ONLY the user-selected figures assigned to this section may be used. Cap
+    # per section so a slide-heavy source cannot flood it; any selected figure
+    # left over is appended elsewhere by the pipeline's safety net.
+    selected = list(dict.fromkeys(assigned_mandatory))[
         : settings.max_figures_per_section
     ]
-
-    # Deterministic figure registry: ID -> real relative path.
     id_to_path: dict[str, str] = {}
-    for rel in figures:
-        id_to_path.setdefault(_fig_id(rel), rel)
-    for rel in mandatory:
-        id_to_path.setdefault(_fig_id(rel), rel)
-    mandatory_ids = [_fig_id(rel) for rel in dict.fromkeys(mandatory)]
-
-    def _label(fid: str) -> str:
-        cap = (captions_by_path.get(id_to_path.get(fid, ""), "") or "").strip()
-        return f"{fid} — {cap}" if cap else fid
+    id_to_caption: dict[str, str] = {}
+    for rel in selected:
+        fid = _fig_id(rel)
+        id_to_path.setdefault(fid, rel)
+        real_cap = (captions_by_path.get(rel) or "").strip()
+        if real_cap:
+            id_to_caption.setdefault(fid, real_cap)
+    mandatory_ids = [_fig_id(rel) for rel in dict.fromkeys(selected)]
 
     fewshot_part = (
         f"\n\nEsempio di stile LaTeX desiderato:\n{few_shot[:MAX_FEWSHOT_CHARS]}"
@@ -180,24 +188,20 @@ async def write_section(
     )
 
     figures_part = ""
-    optional_ids = [
-        fid for fid in (_fig_id(f) for f in figures) if fid not in set(mandatory_ids)
-    ]
-    optional_ids = list(dict.fromkeys(optional_ids))[: settings.max_figures_per_section]
     if mandatory_ids:
-        listed = "\n".join(f"- {_label(fid)}" for fid in mandatory_ids)
-        figures_part += (
-            "\n\nFigure OBBLIGATORIE: inseriscile TUTTE con \\figref{ID}{didascalia} "
-            "(una per riga). L'ID è prima del trattino; dopo il trattino c'è una "
-            "descrizione del contenuto (da OCR) utile a scrivere una didascalia "
-            "pertinente:\n" + listed
-        )
-    if optional_ids:
-        listed = "\n".join(f"- {_label(fid)}" for fid in optional_ids)
-        figures_part += (
-            "\n\nFigure disponibili (facoltative, usa \\figref{ID}{didascalia} solo se "
-            "pertinenti; la descrizione dopo il trattino aiuta a capire il "
-            "contenuto):\n" + listed
+        lines = []
+        for fid in mandatory_ids:
+            hint = id_to_caption.get(fid)
+            lines.append(f"- {fid}" + (f" (didascalia reale: {hint})" if hint else ""))
+        listed = "\n".join(lines)
+        figures_part = (
+            "\n\nFIGURE DA INSERIRE (solo queste, scelte dall'utente): inserisci "
+            "TUTTE e SOLO queste figure, ciascuna con \\figref{ID}{didascalia} su "
+            "una riga a sé, collocandola nel punto del testo più pertinente. "
+            "Quando è indicata una 'didascalia reale' usala come didascalia "
+            "(verrà comunque applicata automaticamente); altrimenti scrivi una "
+            "didascalia BREVE e coerente con il testo in quel punto. NON inserire "
+            "nessun'altra figura e non inventare ID.\n" + listed
         )
 
     user = (
@@ -218,7 +222,7 @@ async def write_section(
         label=f"write:{section['title'][:40]}",
     )
     latex = strip_latex_fences(raw)
-    latex = expand_figrefs(latex, id_to_path, mandatory_ids)
+    latex = expand_figrefs(latex, id_to_path, mandatory_ids, id_to_caption)
     logger.info(
         "Sezione scritta: '%s' (%d caratteri, %d figure obbligatorie)",
         section["title"],
