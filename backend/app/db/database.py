@@ -36,6 +36,7 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "bibliography_bib": "TEXT",
         "references_pool": "JSON",
         "main_tex_override": "TEXT",
+        "pipeline_config": "JSON",
     },
     "figures": {
         "caption": "TEXT",

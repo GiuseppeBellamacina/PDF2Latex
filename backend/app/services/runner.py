@@ -115,7 +115,9 @@ async def run_generation(
             )
 
             extractor = get_extractor(
-                project.extractor_backend, enable_ocr=bool(project.enable_ocr)
+                project.extractor_backend,
+                enable_ocr=bool(project.enable_ocr),
+                pipeline_config=project.pipeline_config,
             )
             ordered_sources = sorted(sources, key=lambda s: s.order_index)
             n_src = len(ordered_sources)

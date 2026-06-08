@@ -35,6 +35,7 @@ from app.db.models import (
     Section,
     Source,
 )
+from app.services import pipeline as pipeline_registry
 from app.services.assembly import (
     assemble_from_sections,
     load_sections,
@@ -58,6 +59,27 @@ router = APIRouter()
 async def list_backends():
     """Report which extractor backends are installed/usable."""
     return available_backends()
+
+
+@router.get("/pipeline")
+async def describe_pipeline(
+    project_key: str | None = None, db: AsyncSession = Depends(get_db)
+):
+    """Describe the composable extraction pipeline for the dashboard.
+
+    Returns every stage with its tools, each annotated with whether it is
+    currently installed/usable and an install hint when it is not. When
+    ``project_key`` is given, the response reflects that project's saved
+    selection; otherwise the global defaults are used.
+    """
+    config = None
+    if project_key:
+        project = await _project_by_key(db, project_key)
+        config = project.pipeline_config
+    return {
+        "default": pipeline_registry.default_pipeline_config(),
+        "stages": pipeline_registry.describe_pipeline(config),
+    }
 
 
 # --------------------------- Providers ------------------------------------- #
@@ -238,6 +260,12 @@ async def update_project(
     data = payload.model_dump(exclude_unset=True)
     source_order = data.pop("source_order", None)
     mandatory_ids = data.pop("mandatory_figure_ids", None)
+
+    if "pipeline_config" in data:
+        cfg = data.pop("pipeline_config")
+        project.pipeline_config = (
+            pipeline_registry.normalize_pipeline_config(cfg) if cfg else None
+        )
 
     for field, value in data.items():
         setattr(project, field, value)

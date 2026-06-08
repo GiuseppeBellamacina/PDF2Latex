@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     extraction_cache: bool = True  # cache Docling markdown by file hash
     dedup_headers_footers: bool = True  # strip recurring page headers/footers
 
+    # Composable extraction pipeline (dashboard). Per-stage tool choices are
+    # stored per-project (Project.pipeline_config); these are global defaults
+    # and model identifiers for the heavier, GPU-backed engines.
+    ocr_engine: str = "tesseract"  # default OCR engine when none is configured
+    # Hugging Face model id for the dots.ocr vision-OCR engine (downloaded on
+    # first use into the local HF cache; runs fully offline afterwards).
+    dots_ocr_model: str = "rednote-hilab/dots.ocr"
+    # Device hint for the GPU-capable engines (paddleocr/surya/dots_ocr/...).
+    # "auto" lets each engine pick CUDA when available and fall back to CPU.
+    pipeline_device: str = "auto"  # auto | cuda | cpu
+
     # LLM orchestration
     llm_max_concurrency: int = 4  # max simultaneous LLM calls (fan-out cap)
     llm_max_retries: int = 4  # retries on transient errors (429/5xx/timeouts)

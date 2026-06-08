@@ -31,9 +31,24 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.services import pipeline
+from app.services.ocr_engines import engine_available as ocr_engine_available
+from app.services.ocr_engines import run_ocr
 from app.services.text_cleaning import strip_recurring_lines
 
 logger = get_logger("extractor")
+
+
+def _ocr_engine_ready(engine: str) -> bool:
+    """Whether the selected OCR engine can actually run.
+
+    Tesseract additionally needs its system binary; the other engines only need
+    their Python package to be importable.
+    """
+    if engine == "tesseract":
+        return tesseract_available()
+    return ocr_engine_available(engine)
+
 
 # A progress callback receives a UI-ready event dict (stage/message/detail/...).
 ProgressCb = Callable[[dict], None] | None
@@ -76,13 +91,18 @@ def _file_hash(pdf_path: Path) -> str:
     return h.hexdigest()[:32]
 
 
-def _score_figure(width: int, height: int, caption: str) -> tuple[float, bool]:
+def _score_figure(
+    width: int, height: int, caption: str, has_real_caption: bool = False
+) -> tuple[float, bool]:
     """Heuristic: is this embedded image worth including in the document?
 
-    Combines rendered size, aspect ratio and the amount of text recovered via
-    OCR. Charts/diagrams/schemas tend to be medium/large with a diagram-like
-    aspect ratio and carry labels; decorative icons are tiny, banners/rules are
-    extremely elongated, and full-slide screenshots are huge. Returns
+    Combines rendered size, aspect ratio and the amount of label text (a real
+    PDF caption laid out next to the figure, or OCR'd labels inside it).
+    Charts/diagrams/schemas tend to be medium/large with a diagram-like aspect
+    ratio and carry labels; decorative icons are tiny, banners/rules are
+    extremely elongated, and full-slide screenshots are huge. When the source
+    PDF actually lays out a caption next to the image that is strong evidence of
+    a real content figure, so the acceptance threshold is lowered. Returns
     ``(score, suggested)``.
     """
     min_side = min(width, height)
@@ -109,8 +129,8 @@ def _score_figure(width: int, height: int, caption: str) -> tuple[float, bool]:
     elif aspect > 4.0:
         score -= 0.3
 
-    # OCR text, when available, reinforces (charts/diagrams carry labels) but is
-    # no longer required to cross the threshold.
+    # Label text, when available, reinforces (charts/diagrams carry labels) but
+    # is no longer required to cross the threshold.
     if words >= 6:
         score += 0.28
     elif words >= 2:
@@ -118,8 +138,14 @@ def _score_figure(width: int, height: int, caption: str) -> tuple[float, bool]:
     elif words >= 1:
         score += 0.08
 
+    # A real caption laid out next to the figure in the PDF is the single
+    # strongest signal of a genuine content figure -> bonus + lower threshold.
+    if has_real_caption:
+        score += 0.2
+
     score = round(max(0.0, min(score, 1.0)), 3)
-    return score, score >= 0.55
+    threshold = 0.48 if has_real_caption else 0.55
+    return score, score >= threshold
 
 
 def _clean_caption(text: str) -> str:
@@ -329,9 +355,15 @@ class BaseExtractor:
 class PyMuPDFExtractor(BaseExtractor):
     """Default extractor: per-page text + embedded figures, with optional OCR fallback."""
 
-    def __init__(self, render_dpi: int = 130, enable_ocr: bool = False) -> None:
+    def __init__(
+        self,
+        render_dpi: int = 130,
+        enable_ocr: bool = False,
+        ocr_engine: str = "tesseract",
+    ) -> None:
         self.render_dpi = render_dpi
         self.enable_ocr = enable_ocr
+        self.ocr_engine = ocr_engine
 
     def extract_figures(self, pdf_path: Path, figures_dir: Path) -> list[FigureInfo]:
         import fitz  # PyMuPDF
@@ -347,7 +379,15 @@ class PyMuPDFExtractor(BaseExtractor):
             page = doc.load_page(i - 1)
             out.extend(
                 self._extract_page_figures(
-                    fitz, doc, page, figures_dir, slug, i, seen_xrefs, ocr_figures=True
+                    fitz,
+                    doc,
+                    page,
+                    figures_dir,
+                    slug,
+                    i,
+                    seen_xrefs,
+                    ocr_figures=True,
+                    ocr_engine=self.ocr_engine,
                 )
             )
         doc.close()
@@ -370,11 +410,13 @@ class PyMuPDFExtractor(BaseExtractor):
         seen_xrefs: set[int] = set()
         ocr_used = 0
 
-        ocr_active = self.enable_ocr and tesseract_available()
+        ocr_active = self.enable_ocr and _ocr_engine_ready(self.ocr_engine)
         _notify(
             progress,
             message=f"PyMuPDF: lettura di {pdf_path.name}",
-            detail=f"OCR {'attivo' if ocr_active else 'non attivo'}",
+            detail=(
+                f"OCR {'attivo (' + self.ocr_engine + ')' if ocr_active else 'non attivo'}"
+            ),
         )
         for i in range(1, doc.page_count + 1):
             page = doc.load_page(i - 1)
@@ -389,7 +431,7 @@ class PyMuPDFExtractor(BaseExtractor):
                 img_path = figures_dir / f"render_{slug}_p{i:03d}.png"
                 pix.save(img_path)
                 img_path_str = str(img_path)
-                ocr_text = _ocr_image(img_path)
+                ocr_text = run_ocr(img_path, settings.ocr_lang, self.ocr_engine)
                 if ocr_text:
                     text = ocr_text
                     source = "ocr"
@@ -400,7 +442,14 @@ class PyMuPDFExtractor(BaseExtractor):
                 figures.extend(
                     fi.rel_path
                     for fi in self._extract_page_figures(
-                        fitz, doc, page, figures_dir, slug, i, seen_xrefs
+                        fitz,
+                        doc,
+                        page,
+                        figures_dir,
+                        slug,
+                        i,
+                        seen_xrefs,
+                        ocr_engine=self.ocr_engine,
                     )
                 )
 
@@ -434,6 +483,7 @@ class PyMuPDFExtractor(BaseExtractor):
         page_no: int,
         seen_xrefs: set[int],
         ocr_figures: bool = False,
+        ocr_engine: str = "tesseract",
     ) -> list[FigureInfo]:
         out: list[FigureInfo] = []
         for idx, info in enumerate(page.get_images(full=True), start=1):
@@ -461,15 +511,20 @@ class PyMuPDFExtractor(BaseExtractor):
                 except Exception:  # noqa: BLE001 - rect lookup is best-effort
                     rect = None
                 pdf_caption = _find_pdf_caption(page, rect) if rect is not None else ""
-                ocr_text = _ocr_image(fig_path) if ocr_figures else ""
+                ocr_text = (
+                    run_ocr(fig_path, settings.ocr_lang, ocr_engine)
+                    if ocr_figures
+                    else ""
+                )
                 caption = pdf_caption or _clean_caption(ocr_text)
                 # Score with whatever label text we have; a caption laid out
                 # next to the image is itself evidence of a real content figure.
                 score, suggested = _score_figure(
-                    pix.width, pix.height, ocr_text or pdf_caption
+                    pix.width,
+                    pix.height,
+                    ocr_text or pdf_caption,
+                    has_real_caption=bool(pdf_caption),
                 )
-                if pdf_caption:
-                    suggested = suggested or score >= 0.45
                 out.append(
                     FigureInfo(
                         rel_path=f"figures/{fig_path.name}",
@@ -674,8 +729,15 @@ class HybridExtractor(BaseExtractor):
     plain PyMuPDF output.
     """
 
-    def __init__(self, render_dpi: int = 130, enable_ocr: bool = True) -> None:
-        self._py = PyMuPDFExtractor(render_dpi=render_dpi, enable_ocr=enable_ocr)
+    def __init__(
+        self,
+        render_dpi: int = 130,
+        enable_ocr: bool = True,
+        ocr_engine: str = "tesseract",
+    ) -> None:
+        self._py = PyMuPDFExtractor(
+            render_dpi=render_dpi, enable_ocr=enable_ocr, ocr_engine=ocr_engine
+        )
 
     def extract(
         self, pdf_path: Path, figures_dir: Path, progress: ProgressCb = None
@@ -703,13 +765,117 @@ class HybridExtractor(BaseExtractor):
         return self._py.extract_figures(pdf_path, figures_dir)
 
 
+class PipelineExtractor(BaseExtractor):
+    """Composable extractor driven by a per-project pipeline config.
+
+    Orchestrates the selected tool for each stage:
+
+    * **text** — PyMuPDF per-page text (always);
+    * **structure** — rich markdown (Docling / Marker / MinerU) used as primary
+      text when available, else PyMuPDF text;
+    * **ocr** — engine used for image-only pages and figure label reading;
+    * **math** — Nougat math-rich markdown appended when enabled;
+    * **figures** — PyMuPDF embedded-figure extraction;
+    * **figure_scoring** — heuristic, optionally OCR-assisted (the ``vlm`` option
+      is applied later, with the LLM, in the runner).
+
+    Falls back gracefully when an optional engine is missing.
+    """
+
+    def __init__(
+        self,
+        config: dict | None = None,
+        enable_ocr: bool = False,
+        render_dpi: int | None = None,
+    ) -> None:
+        self.config = pipeline.normalize_pipeline_config(config)
+        self.enable_ocr = enable_ocr
+        self.render_dpi = render_dpi or settings.render_dpi
+        self.ocr_engine = self.config.get("ocr", "tesseract")
+        # Figure scoring "ocr_assisted" reads labels inside figures via OCR.
+        scoring = self.config.get("figure_scoring", "heuristic")
+        score_with_ocr = scoring == "ocr_assisted" and self.enable_ocr
+        self._py = PyMuPDFExtractor(
+            render_dpi=self.render_dpi,
+            enable_ocr=self.enable_ocr or score_with_ocr,
+            ocr_engine=self.ocr_engine,
+        )
+
+    def extract(
+        self, pdf_path: Path, figures_dir: Path, progress: ProgressCb = None
+    ) -> ExtractedDocument:
+        from app.services import math_engines, structure_engines
+
+        doc = self._py.extract(pdf_path, figures_dir, progress)
+
+        if settings.dedup_headers_footers and doc.pages:
+            cleaned = strip_recurring_lines([p.text for p in doc.pages])
+            for page, text in zip(doc.pages, cleaned):
+                page.text = text
+
+        # Structure stage -> rich markdown as the primary text when available.
+        structure_tool = self.config.get("structure", "none")
+        if structure_tool and structure_tool != "none":
+            rich = structure_engines.extract_structure(
+                pdf_path, structure_tool, progress
+            )
+            if rich:
+                doc.rich_markdown = rich
+            else:
+                logger.info(
+                    "Pipeline: struttura '%s' non disponibile per %s, uso PyMuPDF",
+                    structure_tool,
+                    pdf_path.name,
+                )
+
+        # Math stage -> append math-rich markdown (Nougat) to the primary text.
+        math_tool = self.config.get("math", "none")
+        if math_tool == "nougat":
+            mmd = math_engines.math_markdown(pdf_path, "nougat")
+            if mmd:
+                base = doc.rich_markdown or doc.full_text()
+                doc.rich_markdown = f"{base}\n\n{mmd}".strip()
+                _notify(
+                    progress,
+                    message=f"Nougat: matematica recuperata per {pdf_path.name}",
+                    detail=f"{len(mmd)} caratteri",
+                    level="success",
+                )
+
+        return doc
+
+    def extract_figures(self, pdf_path: Path, figures_dir: Path) -> list[FigureInfo]:
+        return self._py.extract_figures(pdf_path, figures_dir)
+
+
 def get_extractor(
     backend: str | None = None,
     enable_ocr: bool | None = None,
+    pipeline_config: dict | None = None,
 ) -> BaseExtractor:
-    """Return an extractor instance for the configured (or requested) backend."""
-    backend = (backend or settings.extractor_backend).lower()
+    """Return an extractor instance for the requested backend or pipeline config.
+
+    When ``pipeline_config`` is provided (the dashboard's composable pipeline) a
+    :class:`PipelineExtractor` is built. Otherwise the legacy
+    ``hybrid``/``pymupdf``/``docling`` backends are used, so existing projects
+    keep working unchanged.
+    """
     ocr = settings.enable_ocr if enable_ocr is None else enable_ocr
+
+    if pipeline_config:
+        cfg = pipeline.normalize_pipeline_config(pipeline_config)
+        ocr_engine = cfg.get("ocr", "tesseract")
+        if ocr and ocr_engine != "none" and not _ocr_engine_ready(ocr_engine):
+            logger.warning(
+                "OCR '%s' richiesto ma non disponibile: proseguo senza OCR.",
+                ocr_engine,
+            )
+        logger.info("Extractor pipeline=%s ocr=%s", cfg, ocr)
+        return PipelineExtractor(
+            config=cfg, enable_ocr=ocr, render_dpi=settings.render_dpi
+        )
+
+    backend = (backend or settings.extractor_backend).lower()
     if ocr and not tesseract_available():
         logger.warning("OCR richiesto ma non disponibile: proseguo senza OCR.")
     logger.info("Extractor backend=%s ocr=%s", backend, ocr)

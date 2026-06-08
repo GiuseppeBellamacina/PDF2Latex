@@ -137,6 +137,8 @@ class ProjectUpdate(BaseModel):
     extractor_backend: str | None = None
     enable_ocr: bool | None = None
     judge_vision: bool | None = None
+    # Composable extraction pipeline {stage_id: tool_id} from the dashboard.
+    pipeline_config: dict[str, str] | None = None
     # Ordered list of source ids -> sets order_index
     source_order: list[int] | None = None
     # Ids of figures to force-include
@@ -161,6 +163,7 @@ class ProjectOut(BaseModel):
     extractor_backend: str | None = None
     enable_ocr: bool | None = None
     judge_vision: bool | None = None
+    pipeline_config: dict[str, str] | None = None
     output_tex_path: str | None
     output_pdf_path: str | None
     error_message: str | None

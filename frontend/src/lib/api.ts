@@ -65,6 +65,7 @@ export interface Project {
   extractor_backend: string | null;
   enable_ocr: boolean | null;
   judge_vision: boolean | null;
+  pipeline_config: Record<string, string> | null;
   output_tex_path: string | null;
   output_pdf_path: string | null;
   error_message: string | null;
@@ -89,6 +90,7 @@ export interface ProjectUpdate {
   extractor_backend?: string;
   enable_ocr?: boolean;
   judge_vision?: boolean;
+  pipeline_config?: Record<string, string>;
   source_order?: number[];
   mandatory_figure_ids?: number[];
 }
@@ -98,6 +100,30 @@ export interface Backends {
   pymupdf: boolean;
   docling: boolean;
   ocr: boolean;
+}
+
+export interface PipelineTool {
+  id: string;
+  label: string;
+  description: string;
+  available: boolean;
+  install: string | null;
+  gpu: boolean;
+}
+
+export interface PipelineStage {
+  id: string;
+  label: string;
+  description: string;
+  optional: boolean;
+  default: string;
+  selected: string;
+  tools: PipelineTool[];
+}
+
+export interface PipelineDescription {
+  default: Record<string, string>;
+  stages: PipelineStage[];
 }
 
 export interface ProjectSummary {
@@ -262,6 +288,12 @@ export const api = {
       body: JSON.stringify(data),
     }),
   backends: () => req<Backends>("/backends"),
+  getPipeline: (projectKey?: string) =>
+    req<PipelineDescription>(
+      projectKey
+        ? `/pipeline?project_key=${encodeURIComponent(projectKey)}`
+        : "/pipeline",
+    ),
 
   figureUrl: (projectId: string, relPath: string) => {
     const file = relPath.split("/").pop() ?? relPath;

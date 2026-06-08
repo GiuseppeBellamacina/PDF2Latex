@@ -2,6 +2,7 @@ import { ArrowRight, CheckCircle2, ImageIcon, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import Checkbox from "../components/Checkbox";
+import PipelineBuilder from "../components/PipelineBuilder";
 import SourceReorder from "../components/SourceReorder";
 import {
   api,
@@ -35,6 +36,10 @@ export default function ConfigurePage() {
   const [backend, setBackend] = useState("pymupdf");
   const [enableOcr, setEnableOcr] = useState(false);
   const [judgeVision, setJudgeVision] = useState(false);
+  const [useAdvanced, setUseAdvanced] = useState(false);
+  const [pipelineConfig, setPipelineConfig] = useState<Record<string, string>>(
+    {},
+  );
   const [orderedSources, setOrderedSources] = useState<Source[]>([]);
   const [mandatoryIds, setMandatoryIds] = useState<Set<number>>(new Set());
 
@@ -54,6 +59,10 @@ export default function ConfigurePage() {
         setBackend(p.extractor_backend ?? "pymupdf");
         setEnableOcr(!!p.enable_ocr);
         setJudgeVision(!!p.judge_vision);
+        if (p.pipeline_config) {
+          setPipelineConfig(p.pipeline_config);
+          setUseAdvanced(true);
+        }
         setOrderedSources(
           [...p.sources].sort((a, b) => a.order_index - b.order_index),
         );
@@ -111,6 +120,10 @@ export default function ConfigurePage() {
         extractor_backend: backend,
         enable_ocr: enableOcr,
         judge_vision: judgeVision,
+        pipeline_config:
+          useAdvanced && Object.keys(pipelineConfig).length > 0
+            ? pipelineConfig
+            : {},
         source_order: orderedSources.map((s) => s.id),
         mandatory_figure_ids: [...mandatoryIds],
       });
@@ -339,6 +352,31 @@ export default function ConfigurePage() {
           <span className="text-emerald-400">Recommended</span> and preselected
           below.
         </p>
+
+        <div className="border-t border-ink-200/60 pt-4 dark:border-ink-700/60">
+          <Checkbox
+            checked={useAdvanced}
+            onChange={setUseAdvanced}
+            label={
+              <>
+                Advanced pipeline — build a custom extraction pipeline
+                <span className="text-ink-500">
+                  {" "}
+                  (overrides the backend selection above)
+                </span>
+              </>
+            }
+          />
+          {useAdvanced && (
+            <div className="mt-4">
+              <PipelineBuilder
+                projectKey={id}
+                value={pipelineConfig}
+                onChange={setPipelineConfig}
+              />
+            </div>
+          )}
+        </div>
       </section>
 
       {/* Mandatory figures */}

@@ -91,6 +91,10 @@ class Project(Base):
     # Extraction configuration
     extractor_backend = Column(String(50), nullable=True)  # pymupdf|docling|markitdown
     enable_ocr = Column(Boolean, default=False)
+    # Composable extraction pipeline: a mapping {stage_id: tool_id} built in the
+    # dashboard. When set it supersedes ``extractor_backend`` (which is kept as a
+    # legacy fallback for older projects).
+    pipeline_config = Column(JSON, nullable=True)
     # Optional vision judge (needs a multimodal model). Off by default.
     judge_vision = Column(Boolean, default=False)
 

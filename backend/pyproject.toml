@@ -25,8 +25,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Heavier / optional document-understanding backends. Install on demand:
-#   uv sync --extra ocr   /   --extra docling   /   --extra markitdown
+# Composable extraction pipeline — one extra per stage tool, all local & free.
+# Install only the tools you actually select in the dashboard, e.g.:
+#   uv sync --extra structure-docling --extra ocr-rapidocr --extra math-pix2tex
+#
+# Structure / tables -------------------------------------------------------
+structure-docling = ["docling>=2.0"]
+structure-marker = ["marker-pdf>=1.0"]
+structure-mineru = ["magic-pdf>=1.0"]
+# OCR (scanned pages) ------------------------------------------------------
+ocr-tesseract = ["pytesseract>=0.3.10"]          # + system `tesseract` binary
+ocr-rapidocr = ["rapidocr-onnxruntime>=1.3"]
+ocr-paddle = ["paddleocr>=2.7", "paddlepaddle>=2.6"]
+ocr-surya = ["surya-ocr>=0.6"]
+ocr-dots = ["transformers>=4.44", "torch>=2.2"]
+# Math / equations ---------------------------------------------------------
+math-pix2tex = ["pix2tex>=0.1.2"]
+math-nougat = ["nougat-ocr>=0.1.17"]
+# Legacy aliases (kept so existing docs/commands keep working) -------------
 ocr = ["pytesseract>=0.3.10"]
 docling = ["docling>=2.0"]
 markitdown = ["markitdown>=0.0.1a2"]
