@@ -24,6 +24,7 @@ async def init_db() -> None:
 # cheaply, so for this single-user local app we patch existing tables in place.
 _MIGRATIONS: dict[str, dict[str, str]] = {
     "projects": {
+        "public_id": "VARCHAR(32) UNIQUE NOT NULL DEFAULT (lower(hex(randomblob(16))))",
         "author": "VARCHAR(255)",
         "subtitle": "VARCHAR(512)",
         "abstract": "TEXT",
