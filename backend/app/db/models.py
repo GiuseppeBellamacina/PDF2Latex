@@ -89,7 +89,7 @@ class Project(Base):
     main_tex_override = Column(Text, nullable=True)
 
     # Extraction configuration
-    extractor_backend = Column(String(50), nullable=True)  # pymupdf|docling|markitdown
+    extractor_backend = Column(String(50), nullable=True)  # pymupdf|docling
     enable_ocr = Column(Boolean, default=False)
     # Composable extraction pipeline: a mapping {stage_id: tool_id} built in the
     # dashboard. When set it supersedes ``extractor_backend`` (which is kept as a
