@@ -89,3 +89,49 @@ class JudgeSchema(BaseModel):
     summary: str = Field(
         default="", description="Breve giudizio sulla struttura del documento"
     )
+
+
+class CoherenceSchema(BaseModel):
+    """Cross-chapter coherence verdict from the coherence checker."""
+
+    approved: bool = Field(
+        default=True,
+        description="True se non ci sono contraddizioni o incoerenze tra capitoli",
+    )
+    score: int = Field(
+        default=0, description="Coerenza scientifica complessiva da 0 a 100"
+    )
+    issues: list[str] = Field(
+        default_factory=list,
+        description="Contraddizioni, incoerenze o ripetizioni sostanziali (vuoto se ok)",
+    )
+    summary: str = Field(
+        default="", description="Breve giudizio sulla coerenza tra capitoli"
+    )
+
+
+class CitationAuditSchema(BaseModel):
+    """Citation audit verdict from the citation auditor."""
+
+    approved: bool = Field(
+        default=True,
+        description="True se tutte le fonti sono correttamente citate",
+    )
+    score: int = Field(default=0, description="Qualità delle citazioni da 0 a 100")
+    uncited_user_sources: list[str] = Field(
+        default_factory=list,
+        description="Chiavi delle fonti utente NON citate nel documento",
+    )
+    unknown_citations: list[str] = Field(
+        default_factory=list,
+        description="Chiavi citate con \\cite ma NON presenti nel pool",
+    )
+    missed_source_refs: list[str] = Field(
+        default_factory=list,
+        description="Chiavi di riferimenti estratti dai PDF che il documento avrebbe dovuto citare",
+    )
+    issues: list[str] = Field(
+        default_factory=list,
+        description="Problemi con le citazioni (vuoto se ok)",
+    )
+    summary: str = Field(default="", description="Breve riepilogo dell'audit citazioni")

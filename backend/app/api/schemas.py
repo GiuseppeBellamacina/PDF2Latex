@@ -50,6 +50,38 @@ class ProviderTestRequest(BaseModel):
     base_url: str | None = None
 
 
+# --------------------------- Web Tools -------------------------------------- #
+class WebToolCreate(BaseModel):
+    name: str
+    tool_type: str
+    api_key: str | None = None
+    base_url: str | None = None
+    params: dict[str, Any] | None = None
+    is_active: bool = True
+
+
+class WebToolUpdate(BaseModel):
+    name: str | None = None
+    tool_type: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    params: dict[str, Any] | None = None
+    is_active: bool | None = None
+
+
+class WebToolOut(BaseModel):
+    id: int
+    name: str
+    tool_type: str
+    base_url: str | None
+    params: dict[str, Any] | None
+    is_active: bool
+    has_api_key: bool
+
+    class Config:
+        from_attributes = True
+
+
 # --------------------------- Projects -------------------------------------- #
 class SourceOut(BaseModel):
     id: int
@@ -71,6 +103,9 @@ class FigureOut(BaseModel):
     caption: str | None = None
     score: float | None = None
     suggested: bool | None = None
+    user_uploaded: bool | None = None
+    target_section_title: str | None = None
+    custom_caption: str | None = None
 
     class Config:
         from_attributes = True
@@ -123,6 +158,13 @@ class ProjectFileSave(BaseModel):
     content: str
 
 
+class FigureUpdate(BaseModel):
+    """Update the caption or target section of a user-uploaded figure."""
+
+    custom_caption: str | None = None
+    target_section_title: str | None = None
+
+
 class ProjectUpdate(BaseModel):
     """Editable project configuration set on the configuration page."""
 
@@ -136,7 +178,17 @@ class ProjectUpdate(BaseModel):
     structure_hint: str | None = None
     extractor_backend: str | None = None
     enable_ocr: bool | None = None
+    ocr_lang: str | None = None
     judge_vision: bool | None = None
+    # Let the writer LLM supplement with its own knowledge.
+    writer_use_knowledge: bool | None = None
+    # Research-based generation mode (no PDFs needed).
+    research_mode: bool | None = None
+    web_tool_id: int | None = None
+    # User-provided bibliographic sources (JSON array of structured refs).
+    user_sources: list[dict[str, str]] | None = None
+    # LaTeX document template
+    latex_template: str | None = None
     # Composable extraction pipeline {stage_id: tool_id} from the dashboard.
     pipeline_config: dict[str, str] | None = None
     # Ordered list of source ids -> sets order_index
@@ -162,7 +214,13 @@ class ProjectOut(BaseModel):
     structure_hint: str | None = None
     extractor_backend: str | None = None
     enable_ocr: bool | None = None
+    ocr_lang: str | None = None
     judge_vision: bool | None = None
+    latex_template: str | None = None
+    writer_use_knowledge: bool | None = None
+    research_mode: bool | None = None
+    web_tool_id: int | None = None
+    user_sources: list[dict[str, str]] | None = None
     pipeline_config: dict[str, str] | None = None
     output_tex_path: str | None
     output_pdf_path: str | None

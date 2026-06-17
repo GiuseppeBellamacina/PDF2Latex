@@ -22,6 +22,153 @@
   }
 }
 
+@layer utilities {
+  /* Preset pop: the icon scales up, bounces, and settles */
+  @keyframes preset-pop {
+    0% { transform: scale(1); }
+    25% { transform: scale(1.5); }
+    50% { transform: scale(0.9); }
+    75% { transform: scale(1.15); }
+    100% { transform: scale(1); }
+  }
+
+  /* Preset glow: a ring pulses outward from the button */
+  @keyframes preset-glow {
+    0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4); }
+    70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+  }
+
+  /* Pipeline flash: brief background highlight when config changes */
+  @keyframes pipeline-flash {
+    0% { background-color: transparent; }
+    30% { background-color: rgba(16, 185, 129, 0.08); }
+    100% { background-color: transparent; }
+  }
+
+  /* Modal slide-up: used by the summary confirmation dialog */
+  @keyframes modal-up {
+    0% { opacity: 0; transform: translateY(24px) scale(0.96); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  /* --- Pipeline graph SVG animations --------------------------------- */
+
+  /* Marching ants along active edges */
+  @keyframes edge-march {
+    0% { stroke-dashoffset: 14; }
+    100% { stroke-dashoffset: 0; }
+  }
+
+  /* Pulse dot on active node */
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.3); }
+  }
+
+  /* Expanding ring on active node */
+  @keyframes pulse-ring {
+    0% { opacity: 0.4; transform: scale(0.8); }
+    100% { opacity: 0; transform: scale(2.5); }
+  }
+
+  /* Particle flow along active edges (data-flow effect) */
+  @keyframes particle-flow {
+    0% { offset-distance: 0%; opacity: 0; }
+    8% { opacity: 1; }
+    92% { opacity: 1; }
+    100% { offset-distance: 100%; opacity: 0; }
+  }
+
+  /* Glowing trail behind each particle */
+  @keyframes particle-trail {
+    0% { offset-distance: 0%; opacity: 0; }
+    4% { opacity: 0.35; }
+    90% { opacity: 0.35; }
+    100% { offset-distance: 100%; opacity: 0; }
+  }
+
+  .animate-preset-pop {
+    animation: preset-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  .animate-preset-glow {
+    animation: preset-glow 0.7s ease-out;
+  }
+
+  .animate-pipeline-flash {
+    animation: pipeline-flash 0.6s ease-out;
+  }
+
+  .animate-modal-up {
+    animation: modal-up 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  .animate-edge-march {
+    animation: edge-march 0.6s linear infinite;
+  }
+
+  .animate-pulse-dot {
+    animation: pulse-dot 1.5s ease-in-out infinite;
+  }
+
+  .animate-pulse-ring {
+    animation: pulse-ring 1.5s ease-out infinite;
+    transform-origin: center;
+  }
+
+  .animate-particle {
+    animation: particle-flow 1.8s linear infinite;
+    offset-distance: 0%;
+  }
+
+  .animate-particle-trail {
+    animation: particle-trail 1.8s linear infinite;
+    offset-distance: 0%;
+  }
+
+  /* ── Spark burst at edge destination (when particle arrives) ────────── */
+
+  @keyframes spark-0 {
+    0% { transform: translate(0, 0) scale(0.2); opacity: 1; }
+    100% { transform: translate(0, -13px) scale(1.1); opacity: 0; }
+  }
+  @keyframes spark-60 {
+    0% { transform: translate(0, 0) scale(0.2); opacity: 1; }
+    100% { transform: translate(11px, -6px) scale(1.1); opacity: 0; }
+  }
+  @keyframes spark-120 {
+    0% { transform: translate(0, 0) scale(0.2); opacity: 1; }
+    100% { transform: translate(11px, 6px) scale(1.1); opacity: 0; }
+  }
+  @keyframes spark-180 {
+    0% { transform: translate(0, 0) scale(0.2); opacity: 1; }
+    100% { transform: translate(0, 13px) scale(1.1); opacity: 0; }
+  }
+  @keyframes spark-240 {
+    0% { transform: translate(0, 0) scale(0.2); opacity: 1; }
+    100% { transform: translate(-11px, 6px) scale(1.1); opacity: 0; }
+  }
+  @keyframes spark-300 {
+    0% { transform: translate(0, 0) scale(0.2); opacity: 1; }
+    100% { transform: translate(-11px, -6px) scale(1.1); opacity: 0; }
+  }
+
+  /* Central flash: pops in place without drifting */
+  @keyframes spark-flash {
+    0% { transform: scale(0.2); opacity: 0.9; }
+    100% { transform: scale(2.2); opacity: 0; }
+  }
+
+  .animate-spark-0  { animation: spark-0   0.65s ease-out infinite; }
+  .animate-spark-60 { animation: spark-60  0.65s ease-out infinite; }
+  .animate-spark-120{ animation: spark-120 0.65s ease-out infinite; }
+  .animate-spark-180{ animation: spark-180 0.65s ease-out infinite; }
+  .animate-spark-240{ animation: spark-240 0.65s ease-out infinite; }
+  .animate-spark-300{ animation: spark-300 0.65s ease-out infinite; }
+  .animate-spark-flash{ animation: spark-flash 0.45s ease-out infinite; }
+}
+
 @layer components {
   .btn {
     @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <defs>
+    <filter id="neonGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3.5" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="120" height="120" rx="26" fill="#0B0F19" />
+  
+  <text x="16" y="46" font-family="system-ui, -apple-system, sans-serif" font-size="32" font-weight="900" fill="#FFFFFF" letter-spacing="1">PDF</text>
+  
+  <text x="68" y="76" font-family="system-ui, -apple-system, sans-serif" font-size="52" font-weight="900" fill="#00E5FF" filter="url(#neonGlow)" font-style="italic">2</text>
+  
+  <text x="16" y="104" font-family="'Times New Roman', Times, serif" font-size="28" fill="#FFFFFF">
+    L<tspan dx="-4" dy="-8" font-size="20">A</tspan><tspan dx="-3" dy="8" font-size="28">T</tspan><tspan dx="-3" dy="6">E</tspan><tspan dx="-2" dy="-6">X</tspan>
+  </text>
+</svg>

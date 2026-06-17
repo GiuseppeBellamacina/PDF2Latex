@@ -10,28 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.core.config import settings
+from app.services.latex_templates import get_template
 
-PREAMBLE = r"""\documentclass[11pt,a4paper]{report}
-\usepackage[T1]{fontenc}
-\usepackage[utf8]{inputenc}
-\usepackage[%(language)s]{babel}
-\usepackage{amsmath,amssymb,amsthm}
-\usepackage{graphicx}
-\usepackage{float}
-\usepackage{enumitem}
-\usepackage{booktabs}
-\usepackage{array}
-\usepackage{tabularx}
-\usepackage{adjustbox}
-\usepackage[hidelinks]{hyperref}
-\usepackage{geometry}
-\geometry{margin=2.5cm}
-
-\newcommand{\inbreve}[1]{\breve{#1}}
-
-\begin{document}
-"""
-
+# Legacy constants kept for backward compatibility with recompile/regenerate paths.
 TITLE_PAGE = r"""\begin{titlepage}
 \centering
 \vspace*{3cm}
@@ -50,19 +31,11 @@ ABSTRACT_BLOCK = r"""\begin{abstract}
 \end{abstract}
 """
 
-FRONT_MATTER_TAIL = r"""\tableofcontents
-\clearpage
-"""
-
 # Appended (when the document cites references) right before \end{document} so
 # the single, structured bibliography always sits at the very end.
 BIBLIOGRAPHY_BLOCK = r"""\clearpage
 \bibliographystyle{plain}
 \bibliography{references}
-"""
-
-POSTAMBLE = r"""
-\end{document}
 """
 
 
@@ -106,15 +79,19 @@ def assemble_document(
     abstract: str = "",
     cover_date: str = "",
     has_bibliography: bool = False,
+    template_id: str = "default",
 ) -> str:
-    """Join the preamble, title page, optional abstract, body and postamble.
+    """Join the template preamble, title page, optional abstract, body and postamble.
 
-    When ``has_bibliography`` is set, a single ``\\bibliography{references}`` block
-    is appended at the very end of the document (after all chapters).
+    When ``template_id`` is provided, the corresponding template's formatting
+    (document class, packages, margins, title page style) is used instead of
+    the built-in ``report`` default. When ``has_bibliography`` is set, a
+    bibliography block is included at the template-defined location.
     """
     babel_lang = _babel_language(language)
-    preamble = PREAMBLE % {"language": babel_lang}
+    template = get_template(template_id)
 
+    # ── Title page (report/thesis styles; paper uses IEEEtran \maketitle) ──
     subtitle_block = ""
     if subtitle:
         subtitle_block = (
@@ -126,23 +103,46 @@ def assemble_document(
         "author": _escape(author),
         "date": _escape(cover_date) if cover_date else r"\today",
     }
+    # IEEEtran paper uses \maketitle, not \begin{titlepage}...
+    paper_title = (
+        "\\title{" + _escape(title) + "}\n"
+        "\\author{" + _escape(author) + "}\n"
+        "\\maketitle"
+    )
 
+    # ── Abstract block ─────────────────────────────────────────────────────
     abstract_block = ""
     if abstract:
         abstract_block = ABSTRACT_BLOCK % {"abstract": _escape(abstract)}
 
+    # ── Table of contents ───────────────────────────────────────────────────
+    # Disabled for paper templates (no TOC in IEEEtran).
+    toc_block = "" if template_id == "paper" else r"\tableofcontents\clearpage"
+
+    # ── Body ────────────────────────────────────────────────────────────────
     body = "\n\n".join(body_parts)
-    bibliography = ("\n" + BIBLIOGRAPHY_BLOCK) if has_bibliography else ""
-    return (
-        preamble
-        + title_page
-        + abstract_block
-        + FRONT_MATTER_TAIL
-        + "\n"
-        + body
-        + "\n"
-        + bibliography
-        + POSTAMBLE
+
+    # ── Bibliography ────────────────────────────────────────────────────────
+    bibliography = ""
+    if has_bibliography:
+        bib_style = "IEEEtran" if template_id == "paper" else "unsrt"
+        bibliography = (
+            f"\\bibliographystyle{{{bib_style}}}\n"
+            r"\bibliography{references}"
+        )
+
+    # ── Render ──────────────────────────────────────────────────────────────
+    return template.render(
+        language=babel_lang,
+        title=title_page,
+        paper_title=paper_title,
+        subtitle=subtitle_block,
+        author=_escape(author),
+        date=_escape(cover_date) if cover_date else r"\today",
+        abstract=abstract_block,
+        toc=toc_block,
+        body=body,
+        bibliography=bibliography,
     )
 
 

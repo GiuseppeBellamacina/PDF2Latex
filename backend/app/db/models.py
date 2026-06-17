@@ -91,12 +91,32 @@ class Project(Base):
     # Extraction configuration
     extractor_backend = Column(String(50), nullable=True)  # pymupdf|docling
     enable_ocr = Column(Boolean, default=False)
+    # Per-project OCR language (e.g. "ita+eng", "eng", "fra"). When left empty,
+    # the global ``settings.ocr_lang`` is used as fallback.
+    ocr_lang = Column(String(50), nullable=True)
     # Composable extraction pipeline: a mapping {stage_id: tool_id} built in the
     # dashboard. When set it supersedes ``extractor_backend`` (which is kept as a
     # legacy fallback for older projects).
     pipeline_config = Column(JSON, nullable=True)
+    # LaTeX document template (default | paper | thesis-oneside | thesis-twoside).
+    latex_template = Column(String(50), default="default")
     # Optional vision judge (needs a multimodal model). Off by default.
     judge_vision = Column(Boolean, default=False)
+    # Let the writer LLM supplement source material with its own knowledge
+    # when the extracted text is insufficient on a topic.
+    writer_use_knowledge = Column(Boolean, default=False)
+
+    # User-provided bibliographic sources the system should cite and optionally
+    # use to enrich the document. Stored as a JSON array of dicts with keys
+    # ``authors``, ``title``, ``year``, ``venue``.
+    user_sources = Column(JSON, nullable=True)
+
+    # ── Research-based generation (no PDFs needed) ───────────────────────
+    # When True, the pipeline researches the topic online before writing,
+    # using the web tool configured in ``web_tool_id``. Works alongside
+    # uploaded PDFs (research supplements the extracted content).
+    research_mode = Column(Boolean, default=False)
+    web_tool_id = Column(Integer, ForeignKey("web_tools.id"), nullable=True)
 
     output_tex_path = Column(String(512), nullable=True)
     output_pdf_path = Column(String(512), nullable=True)
@@ -136,7 +156,7 @@ class Source(Base):
 
 
 class Figure(Base):
-    """An embedded figure extracted from a source PDF."""
+    """An embedded figure — extracted from a source PDF or uploaded by the user."""
 
     __tablename__ = "figures"
 
@@ -152,6 +172,13 @@ class Figure(Base):
     caption = Column(Text, nullable=True)
     score = Column(Float, default=0.0)
     suggested = Column(Boolean, default=False)
+    # ── User-uploaded figure fields ───────────────────────────────────
+    # True when the image was uploaded by the user (not extracted from a PDF).
+    user_uploaded = Column(Boolean, default=False)
+    # Section title (or part_title — title) the user wants this figure placed in.
+    target_section_title = Column(String(512), nullable=True)
+    # Override caption specified by the user (takes priority over OCR caption).
+    custom_caption = Column(Text, nullable=True)
 
     project = relationship("Project", back_populates="figures")
 
@@ -201,5 +228,25 @@ class ProviderConfig(Base):
     base_url = Column(String(512), nullable=True)
     default_model = Column(String(100), nullable=True)
     params = Column(JSON, nullable=True)  # temperature, max_tokens, top_p, etc.
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WebToolConfig(Base):
+    """A configured web search/research tool (Tavily, Perplexity, Wikipedia, etc.).
+
+    API keys are stored encrypted, mirroring the ``ProviderConfig`` design.
+    """
+
+    __tablename__ = "web_tools"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(100), nullable=False, unique=True)
+    tool_type = Column(
+        String(50), nullable=False
+    )  # tavily|perplexity|wikipedia|custom_httpx
+    api_key_encrypted = Column(Text, nullable=True)
+    base_url = Column(String(512), nullable=True)
+    params = Column(JSON, nullable=True)  # max_results, search_depth, language, etc.
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)

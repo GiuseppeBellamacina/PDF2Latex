@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.schemas import (
+    FigureUpdate,
     GenerateActionRequest,
     ProjectFileOut,
     ProjectFileSave,
@@ -22,6 +26,9 @@ from app.api.schemas import (
     ProviderTestRequest,
     ProviderUpdate,
     SectionRefineRequest,
+    WebToolCreate,
+    WebToolOut,
+    WebToolUpdate,
 )
 from app.core.config import settings
 from app.core.encryption import encrypt_api_key
@@ -34,6 +41,7 @@ from app.db.models import (
     ProviderConfig,
     Section,
     Source,
+    WebToolConfig,
 )
 from app.services import pipeline as pipeline_registry
 from app.services.assembly import (
@@ -47,12 +55,37 @@ from app.services.extractor import (
     pdf_page_count,
 )
 from app.services.latex import build_project_zip, slugify_title, split_into_part_files
+from app.services.latex_templates import list_templates
 from app.services.refine import refine_section
 from app.services.regenerate import regenerate_section
 from app.services.rejudge import rejudge_project
 from app.services.runner import build_llm_config
 
 router = APIRouter()
+
+
+def _parse_user_sources(raw: str) -> list[dict[str, str]]:
+    """Parse user-provided bibliographic sources from a textarea.
+
+    Each line should be: ``Author(s) | Title | Year | Venue (optional)``.
+    Lines starting with ``#`` are treated as comments and skipped.
+    """
+    sources: list[dict[str, str]] = []
+    for line in raw.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 3:
+            continue
+        authors, title, year = parts[0], parts[1], parts[2]
+        venue = parts[3] if len(parts) > 3 else ""
+        if not authors or not title or not year:
+            continue
+        sources.append(
+            {"authors": authors, "title": title, "year": year, "venue": venue}
+        )
+    return sources
 
 
 @router.get("/backends")
@@ -158,7 +191,76 @@ async def test_provider(payload: ProviderTestRequest):
     return await test_llm_connection(config)
 
 
+# --------------------------- Web Tools ------------------------------------- #
+def _web_tool_out(p: WebToolConfig) -> WebToolOut:
+    return WebToolOut(
+        id=p.id,
+        name=p.name,
+        tool_type=p.tool_type,
+        base_url=p.base_url,
+        params=p.params,
+        is_active=p.is_active,
+        has_api_key=bool(p.api_key_encrypted),
+    )
+
+
+@router.get("/webtools", response_model=list[WebToolOut])
+async def list_web_tools(db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(WebToolConfig))).scalars().all()
+    return [_web_tool_out(p) for p in rows]
+
+
+@router.post("/webtools", response_model=WebToolOut)
+async def create_web_tool(payload: WebToolCreate, db: AsyncSession = Depends(get_db)):
+    tool = WebToolConfig(
+        name=payload.name,
+        tool_type=payload.tool_type,
+        base_url=payload.base_url,
+        params=payload.params,
+        is_active=payload.is_active,
+        api_key_encrypted=encrypt_api_key(payload.api_key) if payload.api_key else None,
+    )
+    db.add(tool)
+    await db.commit()
+    await db.refresh(tool)
+    return _web_tool_out(tool)
+
+
+@router.put("/webtools/{tool_id}", response_model=WebToolOut)
+async def update_web_tool(
+    tool_id: int, payload: WebToolUpdate, db: AsyncSession = Depends(get_db)
+):
+    tool = await db.get(WebToolConfig, tool_id)
+    if tool is None:
+        raise HTTPException(404, "Web tool non trovato")
+    data = payload.model_dump(exclude_unset=True)
+    if "api_key" in data:
+        key = data.pop("api_key")
+        tool.api_key_encrypted = encrypt_api_key(key) if key else None
+    for field, value in data.items():
+        setattr(tool, field, value)
+    await db.commit()
+    await db.refresh(tool)
+    return _web_tool_out(tool)
+
+
+@router.delete("/webtools/{tool_id}")
+async def delete_web_tool(tool_id: int, db: AsyncSession = Depends(get_db)):
+    tool = await db.get(WebToolConfig, tool_id)
+    if tool is None:
+        raise HTTPException(404, "Web tool non trovato")
+    await db.delete(tool)
+    await db.commit()
+    return {"ok": True}
+
+
 # --------------------------- Projects -------------------------------------- #
+@router.get("/templates")
+async def list_latex_templates():
+    """Return available LaTeX document templates for the UI selector."""
+    return list_templates()
+
+
 @router.post("/projects", response_model=ProjectOut)
 async def create_project(
     name: str = Form(...),
@@ -170,11 +272,25 @@ async def create_project(
     cover_date: str = Form(""),
     structure_hint: str = Form(""),
     extractor_backend: str = Form("hybrid"),
+    ocr_lang: str = Form(""),
+    latex_template: str = Form("default"),
+    writer_use_knowledge: bool = Form(False),
+    user_sources: str = Form(""),
+    research_mode: bool = Form(False),
+    web_tool_id: int = Form(0),
     files: list[UploadFile] = File(...),
     db: AsyncSession = Depends(get_db),
 ):
-    if not files:
-        raise HTTPException(400, "Nessun file caricato")
+    if not files and not research_mode:
+        raise HTTPException(400, "Nessun file caricato e ricerca web non attiva")
+
+    # Validate web_tool_id when research_mode is enabled.
+    if research_mode and web_tool_id > 0:
+        web_tool = await db.get(WebToolConfig, web_tool_id)
+        if web_tool is None:
+            raise HTTPException(404, "Web tool non trovato")
+        if not web_tool.is_active:
+            raise HTTPException(400, "Il web tool selezionato non è attivo")
 
     project = Project(
         name=name,
@@ -186,6 +302,14 @@ async def create_project(
         cover_date=cover_date or None,
         structure_hint=structure_hint or None,
         extractor_backend=extractor_backend or "hybrid",
+        ocr_lang=ocr_lang or None,
+        latex_template=latex_template or "default",
+        writer_use_knowledge=writer_use_knowledge,
+        user_sources=_parse_user_sources(user_sources)
+        if user_sources.strip()
+        else None,
+        research_mode=bool(research_mode),
+        web_tool_id=web_tool_id if web_tool_id > 0 else None,
         status=ProjectStatus.uploaded,
         total_sources=len(files),
     )
@@ -197,7 +321,8 @@ async def create_project(
     figures_dir = dest_dir / "figures"
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    fig_order = 0
+    # ── Phase 1: write all files to disk ──────────────────────────────────
+    file_infos: list[dict] = []
     for idx, upload in enumerate(files):
         if not (upload.filename or "").lower().endswith(".pdf"):
             continue
@@ -205,38 +330,59 @@ async def create_project(
         target = dest_dir / safe_name
         content = await upload.read()
         target.write_bytes(content)
-        source = Source(
-            project_id=project.id,
-            filename=safe_name,
-            path=str(target),
-            order_index=idx,
-            n_pages=pdf_page_count(target),
-        )
-        db.add(source)
-        await db.flush()  # get source.id
+        file_infos.append({"idx": idx, "filename": safe_name, "target": target})
 
-        # Extract embedded figures so the user can pick mandatory ones.
+    if not file_infos:
+        raise HTTPException(400, "Nessun file PDF valido caricato")
+
+    # ── Phase 2: parallel page count + source creation ────────────────────
+    async def _create_source(info: dict) -> Source:
+        n_pages = await run_in_threadpool(pdf_page_count, info["target"])
+        return Source(
+            project_id=project.id,
+            filename=info["filename"],
+            path=str(info["target"]),
+            order_index=info["idx"],
+            n_pages=n_pages,
+        )
+
+    sources = await asyncio.gather(*[_create_source(info) for info in file_infos])
+    for source in sources:
+        db.add(source)
+    await db.flush()  # assign source.id for all sources at once
+
+    # ── Phase 3: parallel figure extraction ───────────────────────────────
+    async def _extract_one(source: Source, info: dict) -> tuple[Source, list]:
         try:
-            figs = extract_figures(target, figures_dir)
+            figs = await run_in_threadpool(extract_figures, info["target"], figures_dir)
         except Exception:  # noqa: BLE001 - figure extraction is best-effort
             figs = []
+        return source, figs
+
+    all_fig_pairs = await asyncio.gather(
+        *[_extract_one(sources[i], file_infos[i]) for i in range(len(sources))]
+    )
+
+    # ── Phase 4: create Figure records ────────────────────────────────────
+    fig_order = 0
+    for source, figs in all_fig_pairs:
         for fig in figs:
             db.add(
                 Figure(
                     project_id=project.id,
                     source_id=source.id,
-                    source_filename=safe_name,
+                    source_filename=source.filename,
                     rel_path=fig.rel_path,
                     page=fig.page,
                     order_index=fig_order,
                     caption=fig.caption or None,
                     score=fig.score,
                     suggested=fig.suggested,
-                    # Pre-select recommended figures; the user can adjust later.
                     mandatory=fig.suggested,
                 )
             )
             fig_order += 1
+
     await db.commit()
     return await _get_project_full(db, project.id)
 
@@ -266,6 +412,9 @@ async def update_project(
         project.pipeline_config = (
             pipeline_registry.normalize_pipeline_config(cfg) if cfg else None
         )
+
+    if "latex_template" in data:
+        project.latex_template = data.pop("latex_template") or "default"
 
     for field, value in data.items():
         setattr(project, field, value)
@@ -300,13 +449,148 @@ async def update_project(
 async def get_figure(
     project_key: str, filename: str, db: AsyncSession = Depends(get_db)
 ):
-    """Serve an extracted figure image by filename."""
+    """Serve a figure image (extracted or user-uploaded) by filename."""
     project = await _project_by_key(db, project_key)
     safe = Path(filename).name
     path = settings.uploads_dir / f"project_{project.id}" / "figures" / safe
     if not path.exists():
         raise HTTPException(404, "Figura non trovata")
     return FileResponse(path, media_type="image/png")
+
+
+@router.post("/projects/{project_key}/figures/upload")
+async def upload_user_figure(
+    project_key: str,
+    file: UploadFile = File(...),
+    caption: str = Form(""),
+    target_section_title: str = Form(""),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a user-provided image and assign it to a target section.
+
+    The image is stored in the project's ``figures`` directory alongside
+    the extracted figures. A ``Figure`` record is created with
+    ``user_uploaded=True``, so the pipeline can distinguish user images from
+    PDF-extracted ones and place them in the specified section.
+    """
+    project = await _project_by_key(db, project_key)
+    project_id = project.id
+
+    # Validate the file is an image.
+    fname = (file.filename or "image.png").lower()
+    if not any(
+        fname.endswith(ext)
+        for ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+    ):
+        raise HTTPException(
+            400, "Il file deve essere un'immagine (PNG, JPG, GIF, WEBP, BMP)"
+        )
+
+    # Store in the project's figures directory.
+    figures_dir = settings.uploads_dir / f"project_{project_id}" / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+
+    ext = Path(fname).suffix or ".png"
+    safe_name = f"user_{uuid.uuid4().hex[:12]}{ext}"
+    target = figures_dir / safe_name
+    content = await file.read()
+    target.write_bytes(content)
+
+    rel_path = f"figures/{safe_name}"
+
+    # Get the next order_index among user-uploaded figures.
+    existing_count = (
+        (
+            await db.execute(
+                select(Figure).where(
+                    Figure.project_id == project_id,
+                    Figure.user_uploaded == True,  # noqa: E712
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    next_order = len(existing_count) + 1
+
+    figure = Figure(
+        project_id=project_id,
+        source_id=None,
+        source_filename=None,
+        rel_path=rel_path,
+        page=0,
+        mandatory=True,  # user-uploaded figures are always included
+        order_index=next_order,
+        caption=caption or None,
+        custom_caption=caption or None,
+        score=1.0,
+        suggested=False,
+        user_uploaded=True,
+        target_section_title=target_section_title or None,
+    )
+    db.add(figure)
+    await db.commit()
+    await db.refresh(figure)
+    return await _get_project_full(db, project_id)
+
+
+@router.patch("/projects/{project_key}/figures/{figure_id}")
+async def update_user_figure(
+    project_key: str,
+    figure_id: int,
+    payload: FigureUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update the caption or target section of a user-uploaded figure."""
+    project = await _project_by_key(db, project_key)
+    figure = await db.get(Figure, figure_id)
+    if figure is None or figure.project_id != project.id:
+        raise HTTPException(404, "Figura non trovata")
+    if not figure.user_uploaded:
+        raise HTTPException(
+            400, "Solo le figure caricate dall'utente possono essere modificate"
+        )
+
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(400, "Nessun campo da aggiornare")
+
+    if "custom_caption" in updates:
+        figure.custom_caption = updates["custom_caption"] or None
+    if "target_section_title" in updates:
+        figure.target_section_title = updates["target_section_title"] or None
+
+    await db.commit()
+    await db.refresh(figure)
+    return await _get_project_full(db, project.id)
+
+
+@router.delete("/projects/{project_key}/figures/{figure_id}")
+async def delete_user_figure(
+    project_key: str,
+    figure_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a user-uploaded figure. Extracted figures cannot be deleted."""
+    project = await _project_by_key(db, project_key)
+    figure = await db.get(Figure, figure_id)
+    if figure is None or figure.project_id != project.id:
+        raise HTTPException(404, "Figura non trovata")
+    if not figure.user_uploaded:
+        raise HTTPException(
+            400, "Solo le figure caricate dall'utente possono essere eliminate"
+        )
+
+    # Remove the file from disk.
+    file_path = settings.uploads_dir / f"project_{project.id}" / figure.rel_path
+    try:
+        file_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    await db.delete(figure)
+    await db.commit()
+    return await _get_project_full(db, project.id)
 
 
 @router.get("/projects", response_model=list[ProjectSummary])

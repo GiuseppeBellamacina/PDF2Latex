@@ -4,6 +4,10 @@ The graph fans out analysis (per document) and writing (per section) using
 ``asyncio.gather`` for parallelism, while keeping linear stages between them.
 A progress callback is invoked at every stage so the API can stream updates
 over WebSocket.
+
+When ``research_mode`` is enabled, a ``research`` node runs in parallel with
+(or instead of) ``analyze``, producing web-sourced analyses that are merged
+before planning.
 """
 
 from __future__ import annotations
@@ -16,6 +20,8 @@ from typing import Any, cast
 from langgraph.graph import END, START, StateGraph
 
 from app.agents.analyzer import analyze_document
+from app.agents.citation_auditor import audit_citations
+from app.agents.coherence import check_coherence
 from app.agents.judge import judge_structure, revise_structure
 from app.agents.planner import plan_document
 from app.agents.prompts import OVERVIEW_SYSTEM
@@ -23,7 +29,12 @@ from app.agents.reviewer import review_document
 from app.agents.schemas import OverviewSchema
 from app.agents.state import GraphState
 from app.agents.utils import call_llm_structured, compile_error_excerpt, tokens
-from app.agents.writer import figure_latex, write_section
+from app.agents.writer import (
+    expand_section,
+    figure_latex,
+    summarize_section_context,
+    write_section,
+)
 from app.core.logging import get_logger
 from app.services.bibliography import (
     build_bib,
@@ -116,9 +127,12 @@ async def analyze_node(state: GraphState) -> dict[str, Any]:
         state,
         {
             "stage": "analyzing",
+            "node": "analyze",
             "message": f"Analisi di {len(documents)} documenti",
             "progress": 5,
             "detail": ", ".join(d["filename"] for d in documents)[:200],
+            "action": "docs_planned",
+            "documents": [d["filename"] for d in documents],
         },
     )
 
@@ -130,19 +144,116 @@ async def analyze_node(state: GraphState) -> dict[str, Any]:
         state,
         {
             "stage": "analyzing",
+            "node": "analyze",
             "message": f"Analizzati {len(analyses)} documenti",
             "progress": 25,
             "level": "success",
             "detail": f"{n_topics} argomenti individuati",
         },
     )
-    return {"analyses": list(analyses)}
+    return {"doc_analyses": list(analyses)}
+
+
+async def research_node(state: GraphState) -> dict[str, Any]:
+    """Web research node: searches the web and synthesises analyses.
+
+    When the user provides a topic via ``user_prompt`` and enables research
+    mode, this node searches the web, fetches relevant pages, and synthesizes
+    results into ``SourceAnalysis`` dicts — the same format the PDF analyzer
+    produces, so the rest of the pipeline is unchanged.
+    """
+    topic = state.get("user_prompt", "") or state.get("title", "Documento")
+    if not topic.strip():
+        logger.warning("Research mode enabled but no topic provided")
+        return {"web_analyses": []}
+
+    language = state.get("language", "italian")
+    llm_config = state["llm_config"]
+    web_tool_config = state.get("web_tool_config") or {}
+
+    await _emit(
+        state,
+        {
+            "stage": "researching",
+            "node": "research",
+            "message": f"Ricerca web: '{topic[:100]}'",
+            "progress": 3,
+            "detail": f"tool: {web_tool_config.get('tool_type', 'wikipedia')}",
+        },
+    )
+
+    from app.agents.researcher import research_topic
+
+    analyses = await research_topic(
+        topic=topic,
+        language=language,
+        llm_config=llm_config,
+        web_tool_config=web_tool_config,
+    )
+
+    if not analyses:
+        await _emit(
+            state,
+            {
+                "stage": "researching",
+                "node": "research",
+                "message": "Nessun risultato dalla ricerca web",
+                "progress": 20,
+                "level": "warning",
+            },
+        )
+    else:
+        n_topics = sum(len(a.get("topics", [])) for a in analyses)
+        await _emit(
+            state,
+            {
+                "stage": "researching",
+                "node": "research",
+                "message": f"Ricerca completata: {len(analyses)} approfondimenti",
+                "progress": 20,
+                "level": "success",
+                "detail": f"{n_topics} argomenti individuati dalla ricerca web",
+            },
+        )
+
+    return {"web_analyses": list(analyses)}
+
+
+async def merge_analyses_node(state: GraphState) -> dict[str, Any]:
+    """Fan-in point: merges PDF-based and web-based analyses before planning."""
+    doc_analyses = state.get("doc_analyses", []) or []
+    web_analyses = state.get("web_analyses", []) or []
+    merged = list(doc_analyses) + list(web_analyses)
+
+    parts: list[str] = []
+    if doc_analyses:
+        parts.append(f"{len(doc_analyses)} da PDF")
+    if web_analyses:
+        parts.append(f"{len(web_analyses)} da web")
+
+    await _emit(
+        state,
+        {
+            "stage": "merge",
+            "node": "merge_analyses",
+            "message": f"Fonti combinate: {', '.join(parts)}",
+            "progress": 28,
+            "level": "success",
+            "detail": f"{len(merged)} analisi totali per la pianificazione",
+        },
+    )
+    return {"analyses": merged}
 
 
 async def plan_node(state: GraphState) -> dict[str, Any]:
     await _emit(
         state,
-        {"stage": "planning", "message": "Pianificazione struttura", "progress": 30},
+        {
+            "stage": "planning",
+            "node": "plan",
+            "message": "Pianificazione struttura",
+            "progress": 30,
+        },
     )
 
     title, plan = await plan_document(
@@ -162,6 +273,7 @@ async def plan_node(state: GraphState) -> dict[str, Any]:
         state,
         {
             "stage": "planning",
+            "node": "plan",
             "message": f"Struttura: {len(plan)} sezioni",
             "progress": 40,
             "level": "success",
@@ -201,55 +313,303 @@ async def write_node(state: GraphState) -> dict[str, Any]:
     # the sections that use its source). Only these figures may appear; nothing
     # else is offered to the writer.
     assigned_mandatory = _assign_mandatory_to_sections(plan, mandatory_by_name)
+
+    # ── Inject user-uploaded figures into the sections they target ──────
+    user_figure_placements: dict[str, list[tuple[str, str]]] = (
+        state.get("user_figure_placements") or {}
+    )
+    # Collect all user-uploaded figure paths for fallback tracking.
+    all_user_paths: set[str] = set()
+    if user_figure_placements:
+        for idx, section in enumerate(plan):
+            section_title = section.get("title", "")
+            part_title = section.get("part_title", "")
+            full_title = (
+                f"{part_title} — {section_title}" if part_title else section_title
+            )
+            # Match by title or part_title — title combination
+            matched: list[str] = []
+            for target, figs in user_figure_placements.items():
+                target_lower = target.lower().strip()
+                if not target_lower:
+                    continue  # empty target -> handle in fallback
+                if (
+                    target_lower == section_title.lower().strip()
+                    or target_lower == full_title.lower().strip()
+                    or (part_title and target_lower == part_title.lower().strip())
+                ):
+                    for rel_path, cap in figs:
+                        matched.append(rel_path)
+                        all_user_paths.add(rel_path)
+                        if cap:
+                            captions_by_path[rel_path] = cap
+            # Add to assigned mandatory for this section
+            for rel in matched:
+                if rel not in assigned_mandatory[idx]:
+                    assigned_mandatory[idx].append(rel)
+
+        # ── Fallback: collect EVERY user figure (including those with
+        # empty targets) and append unmatched ones to the first section ──
+        all_user_figs: list[str] = []
+        for figs in user_figure_placements.values():
+            for rel_path, capt in figs:
+                all_user_figs.append(rel_path)
+                if capt:
+                    captions_by_path.setdefault(rel_path, capt)
+        unmatched = [r for r in dict.fromkeys(all_user_figs) if r not in all_user_paths]
+        if unmatched and plan:
+            for rel in unmatched:
+                if rel not in assigned_mandatory[0]:
+                    assigned_mandatory[0].append(rel)
+            await _emit(
+                state,
+                {
+                    "stage": "writing",
+                    "node": "write",
+                    "message": f"{len(unmatched)} tue immagini non hanno trovato "
+                    "una sezione corrispondente: aggiunte all'inizio del documento",
+                    "progress": 44,
+                    "level": "warning",
+                    "detail": "Verifica i titoli delle sezioni nella configurazione.",
+                },
+            )
+        logger.info(
+            "Injected %d user-uploaded figures across %d sections",
+            sum(len(v) for v in user_figure_placements.values()),
+            sum(1 for a in assigned_mandatory if a),
+        )
     few_shot = state.get("few_shot", "")
     language = state.get("language", "italian")
     llm_config = state["llm_config"]
 
-    await _emit(
-        state, {"stage": "writing", "message": "Scrittura sezioni", "progress": 45}
-    )
+    from app.core.config import settings as _settings
+
+    use_knowledge = state.get("writer_use_knowledge", _settings.writer_use_knowledge)
+    expand_threshold = _settings.writer_expand_threshold
 
     total = len(plan)
     done = 0
     lock = asyncio.Lock()
 
-    async def _write(idx: int, section: Any) -> Any:
+    # ── Group sections by chapter (part_title) preserving order ──────────────
+    # Sections within a chapter are written SEQUENTIALLY so they can share
+    # context (accumulated key facts). Different chapters run in PARALLEL.
+    chapters: list[tuple[str, list[tuple[int, Any]]]] = []
+    chapter_index: dict[str, int] = {}
+    for i, s in enumerate(plan):
+        pt = (s.get("part_title") or s.get("title") or "Capitolo").strip()
+        if pt not in chapter_index:
+            chapter_index[pt] = len(chapters)
+            chapters.append((pt, []))
+        chapters[chapter_index[pt]][1].append((i, s))
+
+    await _emit(
+        state,
+        {
+            "stage": "writing",
+            "node": "write",
+            "action": "chapters_planned",
+            "message": f"Scrittura di {len(chapters)} capitoli in parallelo",
+            "progress": 45,
+            "chapters": [
+                {"name": name, "sections": len(secs)} for name, secs in chapters
+            ],
+        },
+    )
+
+    # ── Per-chapter sequential write (parallel across chapters) ──────────────
+    all_sections: list[Any] = []  # collects WrittenSection from all chapters
+    established_facts: dict[str, list[str]] = {}
+
+    async def _write_chapter(
+        chapter_name: str, indexed_sections: list[tuple[int, Any]]
+    ) -> list[Any]:
+        """Write all sections of one chapter sequentially with shared context."""
         nonlocal done
-        section_refs: list[dict[str, str]] = []
-        seen_keys: set[str] = set()
-        for fname in section.get("source_filenames", []):
-            for ref in refs_by_source.get(fname, []):
-                if ref["key"] not in seen_keys:
-                    seen_keys.add(ref["key"])
-                    section_refs.append(ref)
-        result = await write_section(
-            section,
-            documents_by_name,
-            assigned_mandatory[idx],
-            captions_by_path,
-            few_shot,
-            language,
-            llm_config,
-            available_refs=section_refs,
+        results: list[Any] = []
+        accumulated_context: list[str] = []  # facts from previous sections
+
+        # Build user source descriptions once per chapter.
+        user_sources_context = _build_user_sources_context(user_sources)
+
+        # Track progress within this specific chapter.
+        chapter_done_count = 0
+        chapter_total_count = len(indexed_sections)
+        await _emit(
+            state,
+            {
+                "stage": "writing",
+                "node": "write",
+                "action": "chapter_start",
+                "chapter": chapter_name,
+                "chapter_total": chapter_total_count,
+                "message": f"Inizio capitolo: {chapter_name}",
+                "progress": 45,
+            },
         )
-        async with lock:
-            done += 1
-            prog = 45 + int(35 * done / max(1, total))
+
+        for idx, section in indexed_sections:
+            # Gather references for this section.
+            section_refs: list[dict[str, str]] = []
+            seen_keys: set[str] = set()
+            for fname in section.get("source_filenames", []):
+                for ref in refs_by_source.get(fname, []):
+                    if ref["key"] not in seen_keys:
+                        seen_keys.add(ref["key"])
+                        section_refs.append(ref)
+
+            # Write the section with accumulated context from previous sections.
+            result = await write_section(
+                section,
+                documents_by_name,
+                assigned_mandatory[idx],
+                captions_by_path,
+                few_shot,
+                language,
+                llm_config,
+                available_refs=section_refs,
+                writer_context=accumulated_context if accumulated_context else None,
+                use_knowledge=use_knowledge,
+                user_sources_context=user_sources_context,
+            )
+            results.append(result)
+
+            # Extract key facts from the written section for the next one.
+            facts = await summarize_section_context(result, llm_config)
+            accumulated_context.extend(facts)
+            if facts:
+                logger.debug(
+                    "Contesto accumulato per '%s': +%d fatti (totale %d)",
+                    chapter_name,
+                    len(facts),
+                    len(accumulated_context),
+                )
+
+            chapter_done_count += 1
+            async with lock:
+                done += 1
+                prog = 45 + int(30 * done / max(1, total))
+                await _emit(
+                    state,
+                    {
+                        "stage": "writing",
+                        "node": "write",
+                        "message": f"Scritta sezione: {section['title']}",
+                        "progress": prog,
+                        "completed": done,
+                        "total": total,
+                        "chapter": chapter_name,
+                        "chapter_done": chapter_done_count,
+                        "chapter_total": chapter_total_count,
+                    },
+                )
+
+        # Store the accumulated context for this chapter.
+        established_facts[chapter_name] = accumulated_context
+        return results
+
+    # ── Merge user-provided sources into the references pool ────────────────
+    user_sources = state.get("user_sources") or []
+    merged_count = 0
+    if user_sources:
+        from app.services.bibliography import make_key as _make_key
+
+        pool_keys = {r["key"] for r in pool if r.get("key")}
+        _used: set[str] = set(pool_keys)
+        for us in user_sources:
+            key = _make_key(us, _used)
+            _used.add(key)
+            if key and key not in pool_keys:
+                pool_keys.add(key)
+                merged_count += 1
+                pool.append(
+                    {
+                        "key": key,
+                        "authors": us.get("authors", ""),
+                        "title": us.get("title", ""),
+                        "year": us.get("year", ""),
+                        "venue": us.get("venue", ""),
+                        "source_filename": "__user__",
+                    }
+                )
+        # Rebuild refs_by_source with the updated pool.
+        refs_by_source = {}
+        for ref in pool:
+            refs_by_source.setdefault(ref["source_filename"], []).append(ref)
+        logger.info(
+            "Merged %d user-provided sources into references pool (total %d)",
+            merged_count,
+            len(pool),
+        )
+
+    # Run chapters in parallel.
+    chapter_results = await asyncio.gather(
+        *[_write_chapter(name, secs) for name, secs in chapters]
+    )
+    for cr in chapter_results:
+        all_sections.extend(cr)
+
+    # ── Expansion pass: expand sections below the character threshold ────────
+    if expand_threshold > 0:
+        short_indices = [
+            i for i, s in enumerate(all_sections) if len(s["latex"]) < expand_threshold
+        ]
+        if short_indices:
             await _emit(
                 state,
                 {
                     "stage": "writing",
-                    "message": f"Scritta sezione: {section['title']}",
-                    "progress": prog,
-                    "completed": done,
-                    "total": total,
+                    "node": "write",
+                    "action": "expanding",
+                    "message": f"Espansione di {len(short_indices)} sezioni brevi",
+                    "progress": 75,
+                    "detail": ", ".join(
+                        all_sections[i]["title"] for i in short_indices
+                    )[:200],
                 },
             )
-        return result
+            expanded = await asyncio.gather(
+                *[
+                    expand_section(
+                        all_sections[i], documents_by_name, language, llm_config
+                    )
+                    for i in short_indices
+                ]
+            )
+            for i, exp in zip(short_indices, expanded):
+                all_sections[i] = exp
 
-    sections = await asyncio.gather(*[_write(i, s) for i, s in enumerate(plan)])
-    sections = sorted(sections, key=lambda s: s["order_index"])
-    return {"sections": list(sections), "references_pool": pool}
+    # ── Sort by order_index (preserves chapter ordering from the plan) ───────
+    all_sections.sort(key=lambda s: s["order_index"])
+    return {
+        "sections": list(all_sections),
+        "references_pool": pool,
+        "established_facts": established_facts,
+    }
+
+
+def _build_user_sources_context(user_sources: list[dict[str, str]] | None) -> str:
+    """Build a prompt section describing the user's bibliographic sources.
+
+    The writer can draw on its knowledge of these works to enrich the text,
+    even without having the full source content extracted.
+    """
+    if not user_sources:
+        return ""
+    lines: list[str] = []
+    for us in user_sources:
+        descr = ", ".join(
+            x for x in (us.get("authors"), us.get("title"), us.get("year")) if x
+        )
+        venue = us.get("venue", "").strip()
+        lines.append("- " + descr + (f" [{venue}]" if venue else ""))
+    if not lines:
+        return ""
+    return (
+        "\n\nFONTI FORNITE DALL'UTENTE (opere che il documento DEVE citare "
+        "e il cui contenuto noto puoi usare per arricchire il testo):\n"
+        + "\n".join(lines)
+    )
 
 
 def _group_chapters(sections: list[Any]) -> list[tuple[str, list[Any]]]:
@@ -263,6 +623,126 @@ def _group_chapters(sections: list[Any]) -> list[tuple[str, list[Any]]]:
             chapters.append((pt, []))
         chapters[index[pt]][1].append(s)
     return chapters
+
+
+async def coherence_node(state: GraphState) -> dict[str, Any]:
+    """Check cross-chapter scientific coherence (best-effort).
+
+    Compares the established facts across chapters for contradictions and
+    inconsistent terminology. Failures are logged but never block the pipeline.
+    Skipped entirely when ``coherence_enabled`` is False.
+    """
+    from app.core.config import settings as _settings
+
+    if not _settings.coherence_enabled:
+        logger.debug("Coherence check disabled via settings")
+        return {}
+
+    try:
+        facts = state.get("established_facts", {}) or {}
+        result = await check_coherence(facts, state["llm_config"])
+        await _emit(
+            state,
+            {
+                "stage": "coherence",
+                "node": "coherence",
+                "message": f"Coerenza tra capitoli: punteggio {result.get('score', '?')}/100",
+                "progress": 79,
+                "level": "success" if result.get("approved") else "warning",
+                "detail": "; ".join(result.get("issues", [])[:3]) or None,
+            },
+        )
+        return {
+            "coherence_issues": result.get("issues", []),
+            "coherence_score": result.get("score", 100),
+        }
+    except Exception as exc:  # noqa: BLE001 — best-effort, don't block pipeline
+        logger.warning("Coherence check failed: %s", exc)
+        return {"coherence_issues": [], "coherence_score": 80}
+
+
+async def citation_node(state: GraphState) -> dict[str, Any]:
+    """Audit citation compliance across all sections (best-effort).
+
+    Verifies that user-provided sources are cited, unknown keys don't appear,
+    and key references aren't missed. Failures are logged but never block.
+    Skipped entirely when ``citations_enabled`` is False.
+    """
+    from app.core.config import settings as _settings
+
+    if not _settings.citations_enabled:
+        logger.debug("Citation audit disabled via settings")
+        return {}
+
+    try:
+        sections = state.get("sections", []) or []
+        pool = state.get("references_pool", []) or []
+        user_sources = state.get("user_sources") or []
+        result = await audit_citations(
+            sections=[dict(s) for s in sections],
+            references_pool=[dict(r) for r in pool],
+            user_sources=[dict(u) for u in user_sources] if user_sources else None,
+            llm_config=state["llm_config"],
+        )
+        uncited = len(result.get("uncited_user_sources", []))
+        unknown = len(result.get("unknown_citations", []))
+        detail_parts: list[str] = []
+        if uncited:
+            detail_parts.append(f"{uncited} fonti utente non citate")
+        if unknown:
+            detail_parts.append(f"{unknown} chiavi sconosciute")
+        await _emit(
+            state,
+            {
+                "stage": "citations",
+                "node": "citations",
+                "message": f"Audit citazioni: punteggio {result.get('score', '?')}/100",
+                "progress": 80,
+                "level": "success" if result.get("approved") else "warning",
+                "detail": "; ".join(detail_parts) or None,
+            },
+        )
+        return {
+            "citation_issues": result.get("issues", []),
+            "citation_report": result.get("summary", ""),
+        }
+    except Exception as exc:  # noqa: BLE001 — best-effort, don't block pipeline
+        logger.warning("Citation audit failed: %s", exc)
+        return {"citation_issues": [], "citation_report": ""}
+
+
+async def merge_node(state: GraphState) -> dict[str, Any]:
+    """Fan-in point: waits for overview, coherence, and citations to complete.
+
+    This node is purely a synchronization barrier. It emits a combined progress
+    event so the UI can display coherence and citation results, then passes
+    through to the review stage.
+    """
+    coherence_score = state.get("coherence_score")
+    citation_issues = state.get("citation_issues") or []
+    coherence_issues = state.get("coherence_issues") or []
+
+    # Log a combined summary for the user.
+    parts: list[str] = []
+    if coherence_score is not None:
+        parts.append(f"coerenza {coherence_score}/100")
+    if citation_issues:
+        parts.append(f"{len(citation_issues)} problemi citazioni")
+    if coherence_issues:
+        parts.append(f"{len(coherence_issues)} problemi coerenza")
+
+    await _emit(
+        state,
+        {
+            "stage": "merge",
+            "node": "merge",
+            "message": "Verifiche completate"
+            + (f": {', '.join(parts)}" if parts else ""),
+            "progress": 83,
+            "level": "info",
+        },
+    )
+    return {}  # pass-through — all state updates already applied by child nodes
 
 
 async def overview_node(state: GraphState) -> dict[str, Any]:
@@ -286,8 +766,9 @@ async def overview_node(state: GraphState) -> dict[str, Any]:
         state,
         {
             "stage": "overview",
+            "node": "overview",
             "message": f"Panoramica dei {len(chapters)} capitoli",
-            "progress": 80,
+            "progress": 81,
         },
     )
 
@@ -345,8 +826,9 @@ async def overview_node(state: GraphState) -> dict[str, Any]:
         state,
         {
             "stage": "overview",
+            "node": "overview",
             "message": "Panoramica dei capitoli generata",
-            "progress": 81,
+            "progress": 82,
             "level": "success",
         },
     )
@@ -394,6 +876,7 @@ def _assemble_initial(state: GraphState) -> str:
     title = state.get("title", "Documento Generato")
     language = state.get("language", "italian")
     metadata = state.get("metadata") or {}
+    template_id = state.get("latex_template") or "default"
     body_parts = _build_body(state)
     # Safety net: ensure every mandatory figure ends up in the document. Any
     # mandatory figure not already referenced is appended in a dedicated section.
@@ -410,6 +893,7 @@ def _assemble_initial(state: GraphState) -> str:
         subtitle=metadata.get("subtitle") or "",
         abstract=metadata.get("abstract") or "",
         cover_date=metadata.get("cover_date") or "",
+        template_id=template_id,
     )
 
 
@@ -424,6 +908,7 @@ async def review_node(state: GraphState) -> dict[str, Any]:
             state,
             {
                 "stage": "reviewing",
+                "node": "review",
                 "message": "Ricompilazione dopo revisione strutturale",
                 "progress": 90,
             },
@@ -434,8 +919,9 @@ async def review_node(state: GraphState) -> dict[str, Any]:
             state,
             {
                 "stage": "reviewing",
+                "node": "review",
                 "message": "Revisione e compilazione",
-                "progress": 82,
+                "progress": 84,
             },
         )
         latex = _assemble_initial(state)
@@ -451,6 +937,7 @@ async def review_node(state: GraphState) -> dict[str, Any]:
                 state,
                 {
                     "stage": "reviewing",
+                    "node": "review",
                     "message": f"Lint LaTeX: {len(lint_notes)} correzioni",
                     "progress": 83,
                     "level": "info",
@@ -498,6 +985,7 @@ async def review_node(state: GraphState) -> dict[str, Any]:
                 state,
                 {
                     "stage": "reviewing",
+                    "node": "review",
                     "message": (
                         "Ricompilazione riuscita"
                         if is_revision
@@ -525,6 +1013,7 @@ async def review_node(state: GraphState) -> dict[str, Any]:
                 state,
                 {
                     "stage": "reviewing",
+                    "node": "review",
                     "message": f"Correzione errori (tentativo {attempt + 1})",
                     "progress": 84 + attempt * 2,
                     "level": "warning",
@@ -543,6 +1032,7 @@ async def review_node(state: GraphState) -> dict[str, Any]:
             state,
             {
                 "stage": "reviewing",
+                "node": "review",
                 "message": "Revisione strutturale scartata (non compilava)",
                 "progress": 94,
                 "level": "warning",
@@ -561,6 +1051,7 @@ async def review_node(state: GraphState) -> dict[str, Any]:
         state,
         {
             "stage": "reviewing",
+            "node": "review",
             "message": "Compilazione non riuscita",
             "progress": 95,
             "level": "error",
@@ -585,6 +1076,7 @@ async def judge_node(state: GraphState) -> dict[str, Any]:
         state,
         {
             "stage": "judging",
+            "node": "judge",
             "message": "Il giudice esamina il PDF compilato",
             "progress": 90,
             "detail": (
@@ -607,6 +1099,7 @@ async def judge_node(state: GraphState) -> dict[str, Any]:
             state,
             {
                 "stage": "judging",
+                "node": "judge",
                 "message": f"Struttura approvata (punteggio {verdict.score}/100)",
                 "progress": 96,
                 "level": "success",
@@ -619,6 +1112,7 @@ async def judge_node(state: GraphState) -> dict[str, Any]:
         state,
         {
             "stage": "judging",
+            "node": "judge",
             "message": f"Revisione struttura: {len(verdict.issues)} problemi",
             "progress": 91,
             "level": "warning",
@@ -666,17 +1160,48 @@ def _after_judge(state: GraphState) -> str:
 def build_graph():
     graph = StateGraph(GraphState)
     graph.add_node("analyze", analyze_node)
+    graph.add_node("research", research_node)
+    graph.add_node("merge_analyses", merge_analyses_node)
     graph.add_node("plan", plan_node)
     graph.add_node("write", write_node)
     graph.add_node("overview", overview_node)
+    graph.add_node("coherence", coherence_node)
+    graph.add_node("citations", citation_node)
+    graph.add_node("merge", merge_node)
     graph.add_node("review", review_node)
     graph.add_node("judge", judge_node)
 
-    graph.add_edge(START, "analyze")
-    graph.add_edge("analyze", "plan")
+    # START → analyze (if PDFs) and/or research (if research_mode).
+    # Both write to separate state keys; merge_analyses combines them.
+    def _route_start(state: GraphState) -> list[str]:
+        routes: list[str] = []
+        if state.get("documents"):
+            routes.append("analyze")
+        if state.get("research_mode"):
+            routes.append("research")
+        return routes if routes else ["analyze"]  # default for safety
+
+    graph.add_conditional_edges(
+        START,
+        _route_start,
+        {
+            "analyze": "analyze",
+            "research": "research",
+        },
+    )
+    graph.add_edge("analyze", "merge_analyses")
+    graph.add_edge("research", "merge_analyses")
+    graph.add_edge("merge_analyses", "plan")
+    # Diamond fan-out: write → overview, coherence, citations (parallel)
     graph.add_edge("plan", "write")
     graph.add_edge("write", "overview")
-    graph.add_edge("overview", "review")
+    graph.add_edge("write", "coherence")
+    graph.add_edge("write", "citations")
+    # Fan-in: all three converge on merge before review
+    graph.add_edge("overview", "merge")
+    graph.add_edge("coherence", "merge")
+    graph.add_edge("citations", "merge")
+    graph.add_edge("merge", "review")
     graph.add_conditional_edges("review", _after_review, {"judge": "judge", END: END})
     graph.add_conditional_edges("judge", _after_judge, {"review": "review", END: END})
 
@@ -695,6 +1220,11 @@ async def run_pipeline(
     structure_hint: str = "",
     progress=None,
     judge_vision: bool | None = None,
+    writer_use_knowledge: bool | None = None,
+    user_sources: list[dict[str, str]] | None = None,
+    research_mode: bool = False,
+    web_tool_config: dict[str, Any] | None = None,
+    user_figure_placements: dict[str, list[tuple[str, str]]] | None = None,
 ) -> dict[str, Any]:
     """Run the full pipeline and return the final state."""
     from app.core.config import settings as _settings
@@ -710,10 +1240,20 @@ async def run_pipeline(
         "figures_dir": str(figures_dir) if figures_dir else None,
         "metadata": metadata or {},
         "structure_hint": structure_hint,
+        "latex_template": (metadata or {}).get("latex_template", "default"),
         "progress": progress,
         "judge_vision": (
             _settings.judge_vision if judge_vision is None else judge_vision
         ),
+        "writer_use_knowledge": (
+            _settings.writer_use_knowledge
+            if writer_use_knowledge is None
+            else writer_use_knowledge
+        ),
+        "user_sources": user_sources or [],
+        "research_mode": research_mode,
+        "web_tool_config": web_tool_config or {},
+        "user_figure_placements": user_figure_placements or {},
     }
     # The produced keys (analyses/plan/sections/...) are filled in by the nodes;
     # the initial state only carries the inputs, hence the cast.

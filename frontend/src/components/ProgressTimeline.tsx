@@ -1,21 +1,30 @@
 import {
+  BookOpenCheck,
+  BookOpenText,
   Check,
   FileSearch,
   Gavel,
+  GitMerge,
   ListTree,
   Loader2,
+  Microscope,
   PencilLine,
   ScanText,
   Wrench,
 } from "lucide-react";
 import { type ProgressEvent } from "../hooks/useGenerateWs";
 import { cn } from "../lib/utils";
+import { deriveState } from "./PipelineGraph";
 
 const STAGES = [
   { key: "extracting", label: "Extraction", icon: ScanText },
   { key: "analyzing", label: "Analysis", icon: FileSearch },
   { key: "planning", label: "Planning", icon: ListTree },
   { key: "writing", label: "Writing", icon: PencilLine },
+  { key: "overview", label: "Overview", icon: BookOpenText },
+  { key: "coherence", label: "Coherence", icon: Microscope },
+  { key: "citations", label: "Citations", icon: BookOpenCheck },
+  { key: "merge", label: "Merge", icon: GitMerge },
   { key: "reviewing", label: "Review", icon: Wrench },
   { key: "judging", label: "Judge", icon: Gavel },
   { key: "done", label: "Completed", icon: Check },
@@ -24,14 +33,37 @@ const STAGES = [
 interface Props {
   events: ProgressEvent[];
   latest: ProgressEvent | null;
+  onNodeClick?: (nodeId: string) => void;
 }
 
-export default function ProgressTimeline({ events, latest }: Props) {
+export default function ProgressTimeline({ events, latest, onNodeClick }: Props) {
   const currentStage = latest?.stage ?? "";
   const currentIdx = STAGES.findIndex((s) => s.key === currentStage);
   const progress = latest?.progress ?? 0;
   const failed = currentStage === "error";
   const completed = currentStage === "done";
+
+  // Pipeline node heatmap — compressed state bar below the main progress bar.
+  const NODE_ORDER = [
+    "extract", "research", "analyze", "merge_analyses", "plan", "write",
+    "overview", "coherence", "citations", "merge", "review", "judge",
+  ];
+  const NODE_LABELS: Record<string, string> = {
+    extract: "Extract", research: "Research", analyze: "Analyze",
+    merge_analyses: "Merge Sources", plan: "Plan", write: "Write",
+    overview: "Overview", coherence: "Coherence", citations: "Citations",
+    merge: "Merge", review: "Review", judge: "Judge",
+  };
+  const graphState = deriveState(events);
+
+  function nodeColor(state: string): string {
+    switch (state) {
+      case "completed": return "#059669";
+      case "active": return "#10B981";
+      case "error": return "#EF4444";
+      default: return "#D1D5DB";
+    }
+  }
 
   return (
     <div className="space-y-5">
@@ -57,6 +89,28 @@ export default function ProgressTimeline({ events, latest }: Props) {
             )}
             style={{ width: `${progress}%` }}
           />
+        </div>
+
+        {/* Node state heatmap */}
+        <div className="mt-1.5 flex gap-[3px]">
+          {NODE_ORDER.map((nid) => {
+            const state = graphState.nodes[nid] ?? "pending";
+            const active = graphState.activeNodes.has(nid);
+            const displayState = state === "pending" && active ? "active" : state;
+            const clickable = displayState !== "pending" && onNodeClick;
+            return (
+              <div
+                key={nid}
+                className="h-1.5 flex-1 rounded-sm transition-all duration-500"
+                style={{
+                  backgroundColor: nodeColor(displayState),
+                  cursor: clickable ? "pointer" : "default",
+                }}
+                title={`${NODE_LABELS[nid]}: ${displayState}${clickable ? " — click for details" : ""}`}
+                onClick={() => clickable && onNodeClick?.(nid)}
+              />
+            );
+          })}
         </div>
       </div>
 

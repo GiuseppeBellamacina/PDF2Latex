@@ -1,4 +1,4 @@
-import { FileText, History, Settings, Upload } from "lucide-react";
+import { History, Settings, Upload } from "lucide-react";
 import { NavLink, Outlet } from "react-router-dom";
 import { cn } from "../lib/utils";
 import ThemeToggle from "./ThemeToggle";
@@ -15,7 +15,7 @@ export default function Layout() {
       <header className="sticky top-0 z-10 border-b border-ink-200 bg-ink-50/80 backdrop-blur dark:border-ink-800 dark:bg-ink-950/80">
         <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4">
           <div className="flex items-center gap-2 font-semibold tracking-tight">
-            <FileText size={18} />
+            <img src="/favicon.svg" alt="PDF2LaTeX" className="h-8 w-8" />
             <span>PDF2LaTeX</span>
           </div>
           <nav className="flex items-center gap-1">

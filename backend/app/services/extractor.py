@@ -91,60 +91,111 @@ def _file_hash(pdf_path: Path) -> str:
     return h.hexdigest()[:32]
 
 
+def _caption_quality(text: str) -> float:
+    """Rate how convincing a caption looks (0.0–1.0).
+
+    A real caption is a short descriptive sentence, not OCR noise. We reward
+    longer text (up to ~15 words) with a reasonable average word length, and
+    penalise strings dominated by short gibberish tokens (common OCR artefact).
+    """
+    words = [w for w in text.split() if len(w) >= 2]
+    n = len(words)
+    if n < 2:
+        return 0.0
+    avg_len = sum(len(w) for w in words) / n
+    # Reward word count up to 15; reward average word length 3–9.
+    count_score = min(n / 15.0, 1.0)
+    len_score = max(0.0, min((avg_len - 2.5) / 6.0, 1.0))
+    # Penalise strings dominated by very short tokens (common OCR artefact).
+    gibberish_penalty = sum(1 for w in words if len(w) <= 2) / max(n, 1)
+    score = count_score * 0.5 + len_score * 0.5 - gibberish_penalty * 0.4
+    return round(max(0.0, min(score, 1.0)), 3)
+
+
 def _score_figure(
-    width: int, height: int, caption: str, has_real_caption: bool = False
+    width: int,
+    height: int,
+    caption: str,
+    has_real_caption: bool = False,
+    caption_confidence: float = 0.0,
+    page_context: dict | None = None,
 ) -> tuple[float, bool]:
     """Heuristic: is this embedded image worth including in the document?
 
-    Combines rendered size, aspect ratio and the amount of label text (a real
-    PDF caption laid out next to the figure, or OCR'd labels inside it).
-    Charts/diagrams/schemas tend to be medium/large with a diagram-like aspect
-    ratio and carry labels; decorative icons are tiny, banners/rules are
-    extremely elongated, and full-slide screenshots are huge. When the source
-    PDF actually lays out a caption next to the image that is strong evidence of
-    a real content figure, so the acceptance threshold is lowered. Returns
-    ``(score, suggested)``.
+    Combines rendered size, aspect ratio, position on page, caption quality,
+    and page-level context (density, competition). Charts/diagrams/schemas tend
+    to be medium/large with a diagram-like aspect ratio and carry labels;
+    decorative icons are tiny, banners/rules are extremely elongated, and
+    full-slide screenshots are huge.
+
+    Args:
+        width, height: Rendered image dimensions in pixels.
+        caption: OCR or PDF caption text (may be empty).
+        has_real_caption: True when a PDF-laid-out caption was found.
+        caption_confidence: 0.0–1.0 confidence of the caption assignment.
+        page_context: Optional dict with keys ``y0``, ``page_height``,
+            ``n_figures_on_page``, ``page_text_len``.
+
+    Returns ``(score, suggested)``.
     """
     min_side = min(width, height)
     max_side = max(width, height)
     aspect = max_side / max(min_side, 1)
-    words = len(caption.split())
 
     score = 0.0
-    # Size is the primary signal and must be enough ON ITS OWN to recommend a
-    # clearly substantial figure even when OCR is unavailable (no caption text).
+    # ── Size (primary signal) ─────────────────────────────────────────────
     if min_side < 110:
         score += 0.0  # decorative icon/logo
     elif min_side < 200:
         score += 0.35
     elif min_side < 1000:
-        score += 0.6  # a solid content figure -> already recommendable
+        score += 0.6  # solid content figure
     else:
         score += 0.5  # very large (often a full-slide screenshot)
 
-    # Aspect ratio: diagram/chart-like shapes get a small bonus; banners/thin
-    # rules (very elongated) are penalised out of the recommendation.
+    # ── Aspect ratio ──────────────────────────────────────────────────────
     if 1.15 <= aspect <= 2.8:
-        score += 0.12
+        score += 0.10
     elif aspect > 4.0:
         score -= 0.3
 
-    # Label text, when available, reinforces (charts/diagrams carry labels) but
-    # is no longer required to cross the threshold.
-    if words >= 6:
-        score += 0.28
-    elif words >= 2:
-        score += 0.18
-    elif words >= 1:
-        score += 0.08
+    # ── Caption quality ───────────────────────────────────────────────────
+    cap_qual = _caption_quality(caption)
+    if cap_qual >= 0.6:
+        score += 0.25
+    elif cap_qual >= 0.3:
+        score += 0.15
+    elif cap_qual >= 0.1:
+        score += 0.06
 
-    # A real caption laid out next to the figure in the PDF is the single
-    # strongest signal of a genuine content figure -> bonus + lower threshold.
+    # PDF-laid-out caption is strong evidence → bonus + confidence boost.
     if has_real_caption:
-        score += 0.2
+        score += 0.15 + caption_confidence * 0.10
+
+    # ── Page-level context (density, position, competition) ────────────────
+    if page_context:
+        n_figures = page_context.get("n_figures_on_page", 0)
+        y0 = page_context.get("y0", 0.0)
+        ph = page_context.get("page_height", 800.0)
+        text_len = page_context.get("page_text_len", 0)
+
+        # Position bonus: figures in the top third of a page are often key.
+        if ph > 0 and y0 / ph < 0.30:
+            score += 0.08
+
+        # Competition penalty: many figures on one page (slide deck, gallery).
+        if n_figures > 3:
+            score -= 0.06 * (n_figures - 3)
+        elif n_figures == 1:
+            score += 0.05  # sole figure on page → likely important
+
+        # Density penalty: heavy-text pages with inline figures are often minor.
+        if text_len > 4000 and min_side < 600:
+            score -= 0.08
 
     score = round(max(0.0, min(score, 1.0)), 3)
-    threshold = 0.48 if has_real_caption else 0.55
+    # Threshold: lower when we have strong caption evidence.
+    threshold = 0.45 if (has_real_caption and caption_confidence >= 0.6) else 0.52
     return score, score >= threshold
 
 
@@ -160,62 +211,133 @@ def _clean_caption(text: str) -> str:
 _CAPTION_LABEL_RE = re.compile(
     r"^\s*(?:fig(?:ura|ure|\.)?|tab(?:ella|le|\.)?|grafico|graph|chart|"
     r"schema|scheme|immagine|image|diagramma|diagram|plot|"
-    r"esempio|example)\s*\.?\s*\d{0,3}\s*[\.:)\u2013\u2014\-]?\s*",
+    r"esempio|example|(?:supplementary\s+)?figure|(?:illustrazione|illustration))"
+    r"\s*\.?\s*\d{0,3}[a-z]?\s*[\.:)\u2013\u2014\-]?\s*",
     re.IGNORECASE,
 )
 
+# Capture the figure/table number from a caption label for matching.
+_CAPTION_NUMBER_RE = re.compile(r"(\d+)", re.IGNORECASE)
 
-def _find_pdf_caption(page, rect, max_gap: float = 90.0) -> str:  # noqa: ANN001
+
+def _find_pdf_caption(  # type: ignore[no-untyped-def]
+    page, rect, max_gap: float = 90.0, return_confidence: bool = False
+) -> str | tuple[str, float]:
     """Find the real caption text laid out near a figure in the source PDF.
 
-    This reads the actual page text near the image's bounding box instead of
-    OCR-ing the pixels inside the image. A text block immediately BELOW the
-    figure (preferred) or ABOVE it, that horizontally overlaps it, is taken as
-    the caption. Blocks beginning with a caption keyword (``Figura 3:`` …) win;
-    otherwise the closest short block below the image is used. The keyword label
-    is stripped (LaTeX adds its own ``Figura N:``). Returns ``""`` when nothing
-    plausible is found, so the caller can fall back to OCR / the model.
+    Multi-zone search: checks BELOW (preferred), RIGHT, ABOVE, and LEFT of the
+    figure bounding box, in that priority order. A block starting with a
+    caption keyword (``Figura 3:`` …) wins over unlabelled neighbours. When no
+    immediate neighbour is plausible, a wider-context fallback scans the entire
+    page for figure-number mentions near the image's vertical position — such
+    captions are returned with a low confidence score.
+
+    Args:
+        page: PyMuPDF page object.
+        rect: PyMuPDF Rect for the image.
+        max_gap: Maximum pixel gap between figure edge and caption block.
+        return_confidence: If True, return ``(caption, confidence)``.
+
+    Returns:
+        The cleaned caption string, or ``""``. When ``return_confidence=True``
+        a ``(str, float)`` tuple is returned (0.0–1.0 confidence).
     """
     try:
         blocks = page.get_text("blocks")
     except Exception:  # noqa: BLE001 - layout text is best-effort
-        return ""
+        return ("", 0.0) if return_confidence else ""
 
     ix0, iy0, ix1, iy1 = rect.x0, rect.y0, rect.x1, rect.y1
     iw = max(ix1 - ix0, 1.0)
+    ih = max(iy1 - iy0, 1.0)
     best: tuple[int, float, str, bool] | None = None  # (priority, gap, text, kw)
+
     for b in blocks:
         if len(b) < 5:
             continue
         bx0, by0, bx1, by1, raw = b[0], b[1], b[2], b[3], b[4]
         text = re.sub(r"\s+", " ", str(raw)).strip()
-        if len(text) < 3 or len(text) > 400:
+        if len(text) < 3 or len(text) > 500:
             continue
-        # Require meaningful horizontal overlap with the figure.
-        overlap = max(0.0, min(ix1, bx1) - max(ix0, bx0))
-        if overlap / iw < 0.30:
-            continue
+
+        # Measure overlap in both axes to support multi-zone (below/above/left/right).
+        overlap_x = max(0.0, min(ix1, bx1) - max(ix0, bx0))
+        overlap_y = max(0.0, min(iy1, by1) - max(iy0, by0))
+
         below_gap = by0 - iy1
         above_gap = iy0 - by1
-        if 0 <= below_gap <= max_gap:
-            gap, below = below_gap, True
-        elif 0 <= above_gap <= max_gap:
-            gap, below = above_gap, False
-        else:
+        right_gap = bx0 - ix1
+        left_gap = ix0 - bx1
+
+        # Determine zone and gap.
+        zone: str | None = None
+        gap: float = 9999.0
+
+        # Below: meaningful horizontal overlap, small vertical gap.
+        if overlap_x / iw >= 0.30 and 0 <= below_gap <= max_gap:
+            zone, gap = "below", below_gap
+        # Right: meaningful vertical overlap, small horizontal gap.
+        elif overlap_y / ih >= 0.30 and 0 <= right_gap <= max_gap * 1.5:
+            zone, gap = "right", right_gap
+        # Above: meaningful horizontal overlap, small vertical gap.
+        elif overlap_x / iw >= 0.30 and 0 <= above_gap <= max_gap:
+            zone, gap = "above", above_gap
+        # Left: meaningful vertical overlap, small horizontal gap.
+        elif overlap_y / ih >= 0.30 and 0 <= left_gap <= max_gap * 1.5:
+            zone, gap = "left", left_gap
+
+        if zone is None:
             continue
-        keyword = bool(_CAPTION_LABEL_RE.match(text))
-        # Keyword captions below the image are the strongest signal.
-        priority = (0 if below else 1) if keyword else (2 if below else 3)
-        cand = (priority, gap, text, keyword)
+
+        has_kw = bool(_CAPTION_LABEL_RE.match(text))
+        # Priority: below-kw (0) < right-kw/above-kw (1) < below-plain (2)
+        #          < right-plain/above-plain (3) < left (4)
+        zone_order = {"below": 0, "right": 1, "above": 1, "left": 2}
+        priority = (zone_order[zone] * 2) + (0 if has_kw else 1)
+        cand = (priority, gap, text, has_kw)
         if best is None or (cand[0], cand[1]) < (best[0], best[1]):
             best = cand
 
+    # ── Wider-context fallback ───────────────────────────────────────────
+    confidence = 0.0
     if best is None:
-        return ""
-    _, _, text, keyword = best
+        # Scan the full page for figure-number mentions near the image's Y.
+        img_mid_y = (iy0 + iy1) / 2.0
+        page_texts: list[tuple[float, str, bool]] = []  # (y-distance, text, kw)
+        for b in blocks:
+            if len(b) < 5:
+                continue
+            _, by0, _, _, raw = b
+            text = re.sub(r"\s+", " ", str(raw)).strip()
+            if len(text) < 4 or len(text) > 500:
+                continue
+            kw = bool(_CAPTION_LABEL_RE.match(text))
+            b_mid_y = by0
+            dist = abs(b_mid_y - img_mid_y)
+            page_texts.append((dist, text, kw))
+        if page_texts:
+            page_texts.sort(key=lambda x: (0 if x[2] else 1, x[0]))
+            closest_dist, closest_text, closest_kw = page_texts[0]
+            if closest_kw or closest_dist < max_gap * 4:
+                best = (10, closest_dist, closest_text, closest_kw)
+                confidence = 0.35 if closest_kw else 0.20
+
+    if best is None:
+        return ("", 0.0) if return_confidence else ""
+
+    _, _gap, text, keyword = best
+    if best[0] >= 10:
+        pass  # confidence already set by fallback
+    elif keyword:
+        zone_letter = {0: 1.0, 1: 0.9, 2: 0.70}
+        confidence = zone_letter.get(best[0] // 2, 0.80)
+    else:
+        confidence = 0.55
+
     if keyword:
         text = _CAPTION_LABEL_RE.sub("", text, count=1).strip()
-    return _clean_caption(text)
+    caption = _clean_caption(text)
+    return (caption, round(confidence, 2)) if return_confidence else caption
 
 
 # --------------------------------------------------------------------------- #
@@ -360,10 +482,12 @@ class PyMuPDFExtractor(BaseExtractor):
         render_dpi: int = 130,
         enable_ocr: bool = False,
         ocr_engine: str = "tesseract",
+        ocr_lang: str | None = None,
     ) -> None:
         self.render_dpi = render_dpi
         self.enable_ocr = enable_ocr
         self.ocr_engine = ocr_engine
+        self.ocr_lang = ocr_lang or settings.ocr_lang
 
     def extract_figures(self, pdf_path: Path, figures_dir: Path) -> list[FigureInfo]:
         import fitz  # PyMuPDF
@@ -388,6 +512,7 @@ class PyMuPDFExtractor(BaseExtractor):
                     seen_xrefs,
                     ocr_figures=True,
                     ocr_engine=self.ocr_engine,
+                    ocr_lang=self.ocr_lang,
                 )
             )
         doc.close()
@@ -431,7 +556,7 @@ class PyMuPDFExtractor(BaseExtractor):
                 img_path = figures_dir / f"render_{slug}_p{i:03d}.png"
                 pix.save(img_path)
                 img_path_str = str(img_path)
-                ocr_text = run_ocr(img_path, settings.ocr_lang, self.ocr_engine)
+                ocr_text = run_ocr(img_path, self.ocr_lang, self.ocr_engine)
                 if ocr_text:
                     text = ocr_text
                     source = "ocr"
@@ -450,6 +575,7 @@ class PyMuPDFExtractor(BaseExtractor):
                         i,
                         seen_xrefs,
                         ocr_engine=self.ocr_engine,
+                        ocr_lang=self.ocr_lang,
                     )
                 )
 
@@ -484,9 +610,16 @@ class PyMuPDFExtractor(BaseExtractor):
         seen_xrefs: set[int],
         ocr_figures: bool = False,
         ocr_engine: str = "tesseract",
+        ocr_lang: str | None = None,
     ) -> list[FigureInfo]:
         out: list[FigureInfo] = []
-        for idx, info in enumerate(page.get_images(full=True), start=1):
+        all_images = page.get_images(full=True)
+        n_total = len(all_images)
+        page_text_len = len(page.get_text("text").strip())
+        page_rect = page.rect
+        page_height = page_rect.y1 - page_rect.y0
+
+        for idx, info in enumerate(all_images, start=1):
             xref = info[0]
             if xref in seen_xrefs:
                 continue
@@ -510,20 +643,31 @@ class PyMuPDFExtractor(BaseExtractor):
                         rect = rects[0]
                 except Exception:  # noqa: BLE001 - rect lookup is best-effort
                     rect = None
-                pdf_caption = _find_pdf_caption(page, rect) if rect is not None else ""
+                pdf_caption, caption_conf = (
+                    _find_pdf_caption(page, rect, return_confidence=True)
+                    if rect is not None
+                    else ("", 0.0)
+                )
                 ocr_text = (
-                    run_ocr(fig_path, settings.ocr_lang, ocr_engine)
+                    run_ocr(fig_path, ocr_lang or settings.ocr_lang, ocr_engine)
                     if ocr_figures
                     else ""
                 )
                 caption = pdf_caption or _clean_caption(ocr_text)
-                # Score with whatever label text we have; a caption laid out
-                # next to the image is itself evidence of a real content figure.
+                # Build per-figure page context for density-aware scoring.
+                ctx = {
+                    "y0": rect.y0 if rect else 0.0,
+                    "page_height": page_height,
+                    "n_figures_on_page": n_total,
+                    "page_text_len": page_text_len,
+                }
                 score, suggested = _score_figure(
                     pix.width,
                     pix.height,
                     ocr_text or pdf_caption,
                     has_real_caption=bool(pdf_caption),
+                    caption_confidence=caption_conf,
+                    page_context=ctx,
                 )
                 out.append(
                     FigureInfo(
@@ -734,9 +878,13 @@ class HybridExtractor(BaseExtractor):
         render_dpi: int = 130,
         enable_ocr: bool = True,
         ocr_engine: str = "tesseract",
+        ocr_lang: str | None = None,
     ) -> None:
         self._py = PyMuPDFExtractor(
-            render_dpi=render_dpi, enable_ocr=enable_ocr, ocr_engine=ocr_engine
+            render_dpi=render_dpi,
+            enable_ocr=enable_ocr,
+            ocr_engine=ocr_engine,
+            ocr_lang=ocr_lang,
         )
 
     def extract(
@@ -787,6 +935,7 @@ class PipelineExtractor(BaseExtractor):
         config: dict | None = None,
         enable_ocr: bool = False,
         render_dpi: int | None = None,
+        ocr_lang: str | None = None,
     ) -> None:
         self.config = pipeline.normalize_pipeline_config(config)
         self.enable_ocr = enable_ocr
@@ -799,6 +948,7 @@ class PipelineExtractor(BaseExtractor):
             render_dpi=self.render_dpi,
             enable_ocr=self.enable_ocr or score_with_ocr,
             ocr_engine=self.ocr_engine,
+            ocr_lang=ocr_lang,
         )
 
     def extract(
@@ -852,6 +1002,7 @@ def get_extractor(
     backend: str | None = None,
     enable_ocr: bool | None = None,
     pipeline_config: dict | None = None,
+    ocr_lang: str | None = None,
 ) -> BaseExtractor:
     """Return an extractor instance for the requested backend or pipeline config.
 
@@ -859,32 +1010,50 @@ def get_extractor(
     :class:`PipelineExtractor` is built. Otherwise the legacy
     ``hybrid``/``pymupdf``/``docling`` backends are used, so existing projects
     keep working unchanged.
+
+    When the pipeline config explicitly selects an OCR engine (not ``"none"``),
+    OCR is auto-enabled regardless of the ``enable_ocr`` flag, so the user's
+    pipeline choice is always honoured.
+
+    ``ocr_lang`` is the per-project OCR language (e.g. ``"ita+eng"``). When left
+    empty, the global ``settings.ocr_lang`` is used as fallback.
     """
     ocr = settings.enable_ocr if enable_ocr is None else enable_ocr
+    lang = ocr_lang or settings.ocr_lang
 
     if pipeline_config:
         cfg = pipeline.normalize_pipeline_config(pipeline_config)
         ocr_engine = cfg.get("ocr", "tesseract")
+        # Auto-enable OCR when the pipeline config explicitly selects an engine.
+        if ocr_engine and ocr_engine != "none":
+            ocr = True
         if ocr and ocr_engine != "none" and not _ocr_engine_ready(ocr_engine):
             logger.warning(
                 "OCR '%s' richiesto ma non disponibile: proseguo senza OCR.",
                 ocr_engine,
             )
-        logger.info("Extractor pipeline=%s ocr=%s", cfg, ocr)
+        logger.info("Extractor pipeline=%s ocr=%s lang=%s", cfg, ocr, lang)
         return PipelineExtractor(
-            config=cfg, enable_ocr=ocr, render_dpi=settings.render_dpi
+            config=cfg,
+            enable_ocr=ocr,
+            render_dpi=settings.render_dpi,
+            ocr_lang=lang,
         )
 
     backend = (backend or settings.extractor_backend).lower()
     if ocr and not tesseract_available():
         logger.warning("OCR richiesto ma non disponibile: proseguo senza OCR.")
-    logger.info("Extractor backend=%s ocr=%s", backend, ocr)
+    logger.info("Extractor backend=%s ocr=%s lang=%s", backend, ocr, lang)
     if backend == "docling":
         return DoclingExtractor()
     if backend == "pymupdf":
-        return PyMuPDFExtractor(render_dpi=settings.render_dpi, enable_ocr=ocr)
+        return PyMuPDFExtractor(
+            render_dpi=settings.render_dpi, enable_ocr=ocr, ocr_lang=lang
+        )
     # Default: hybrid (Docling text + PyMuPDF figures + OCR fallback).
-    return HybridExtractor(render_dpi=settings.render_dpi, enable_ocr=ocr)
+    return HybridExtractor(
+        render_dpi=settings.render_dpi, enable_ocr=ocr, ocr_lang=lang
+    )
 
 
 def extract_figures(pdf_path: Path, figures_dir: Path) -> list[FigureInfo]:

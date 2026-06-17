@@ -18,6 +18,14 @@ export interface ProgressEvent {
     output_tokens: number;
     total_tokens: number;
   };
+  /** Graph visualization fields */
+  node?: string;
+  action?: string;
+  chapters?: { name: string; sections: number }[];
+  documents?: string[];
+  chapter?: string;
+  chapter_done?: number;
+  chapter_total?: number;
 }
 
 export function useGenerateWs(projectId: string) {

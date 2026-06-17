@@ -55,12 +55,20 @@ class GraphState(TypedDict, total=False):
 
     # Per-run overrides (decided in the UI, not from global settings)
     judge_vision: bool
+    writer_use_knowledge: bool
+
+    # Research mode (web-based research, no PDFs required)
+    research_mode: bool
+    web_tool_config: dict[str, Any]  # serialized WebToolConfig for search
 
     # Paths
     work_dir: str
     figures_dir: str | None
 
-    # Intermediate / outputs
+    # Intermediate / outputs — doc_analyses + web_analyses are merged into
+    # ``analyses`` before planning, so downstream nodes are agnostic.
+    doc_analyses: Required[list[SourceAnalysis]]
+    web_analyses: Required[list[SourceAnalysis]]
     analyses: Required[list[SourceAnalysis]]
     title: str
     plan: Required[list[PlannedSection]]
@@ -83,5 +91,30 @@ class GraphState(TypedDict, total=False):
     good_latex: Required[str]  # last version that compiled (rollback target)
     good_pdf: Required[str | None]
 
+    # Per-chapter list of established facts (extracted after each section,
+    # passed as progressive context to subsequent sections in the same chapter).
+    established_facts: dict[str, list[str]]
+
+    # Coherence checker: validates cross-chapter scientific consistency.
+    # ``coherence_issues`` lists contradictions or terminology mismatches found
+    # across chapters; ``coherence_score`` is an overall 0-100 rating.
+    coherence_issues: list[str]
+    coherence_score: int
+
+    # Citation auditor: verifies source references are properly used.
+    # ``citation_issues`` flags uncited user sources, unknown keys, or missed
+    # references; ``citation_report`` is a human-readable summary.
+    citation_issues: list[str]
+    citation_report: str
+
+    # User-provided bibliographic sources (structured references the user wants
+    # the system to cite and optionally enrich the content with). Merged into
+    # the references pool before writing.
+    user_sources: list[dict[str, str]]
+
     # Progress callback (not serialized, passed through)
     progress: ProgressCb
+
+    # Web research analytics (for the frontend graph visualization)
+    research_queries: list[str]  # generated search queries
+    research_results_count: int  # total results found

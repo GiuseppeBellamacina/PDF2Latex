@@ -45,7 +45,16 @@ math-nougat = ["nougat-ocr>=0.1.17"]
 
 dev = [
     "ruff>=0.6",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
 ]
+
+# Web search / research tool backends — install the ones you use.
+# Wikipedia is built-in (no extra deps).
+research-tavily = ["tavily-python>=0.5"]
+# Perplexity stays with direct HTTPX — it follows the OpenAI-compatible pattern
+# and the project already uses httpx everywhere; adding a full OpenAI client
+# just for Perplexity would complicate the adapter pattern unnecessarily.
 
 [build-system]
 requires = ["hatchling"]
@@ -67,3 +76,8 @@ ignore = ["E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["."]

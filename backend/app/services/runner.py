@@ -1,4 +1,7 @@
-"""Orchestrates a full generation run for a project: extract -> pipeline -> persist."""
+"""Orchestrates a full generation run for a project: extract -> pipeline -> persist.
+
+Supports both PDF-based and research-based (web search) generation modes.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ from app.db.models import (
     Section,
     SectionStatus,
     Source,
+    WebToolConfig,
 )
 from app.services.extractor import get_extractor
 from app.services.progress import manager
@@ -77,12 +81,19 @@ async def run_generation(
         # Mandatory figures grouped by source filename.
         mandatory_by_name: dict[str, list[str]] = {}
         captions_by_path: dict[str, str] = {}
+        # User-uploaded figures: {section_title: [(rel_path, caption), ...]}
+        user_figure_placements: dict[str, list[tuple[str, str]]] = {}
         for fig in figures:
             if fig.caption:
                 captions_by_path[fig.rel_path] = fig.caption
-            if fig.mandatory:
+            if fig.mandatory and not fig.user_uploaded:
                 mandatory_by_name.setdefault(fig.source_filename or "", []).append(
                     fig.rel_path
+                )
+            if fig.user_uploaded and fig.target_section_title:
+                cap = fig.custom_caption or fig.caption or ""
+                user_figure_placements.setdefault(fig.target_section_title, []).append(
+                    (fig.rel_path, cap)
                 )
 
         llm_config = build_llm_config(provider, model)
@@ -99,6 +110,7 @@ async def run_generation(
             "subtitle": project.subtitle or "",
             "abstract": project.abstract or "",
             "cover_date": project.cover_date or "",
+            "latex_template": project.latex_template or "default",
         }
         structure_hint = project.structure_hint or ""
 
@@ -106,99 +118,129 @@ async def run_generation(
             await manager.emit(project_id, event)
 
         try:
-            # ---- Extraction ----
+            # ---- Extraction (PDF-based, skipped if research-only) ----
             project.status = ProjectStatus.analyzing
             await session.commit()
-            await manager.emit(
-                project_id,
-                {"stage": "extracting", "message": "Estrazione PDF", "progress": 2},
-            )
 
-            extractor = get_extractor(
-                project.extractor_backend,
-                enable_ocr=bool(project.enable_ocr),
-                pipeline_config=project.pipeline_config,
-            )
             ordered_sources = sorted(sources, key=lambda s: s.order_index)
             n_src = len(ordered_sources)
-            logger.info(
-                "Progetto %s: estrazione di %d sorgenti (backend=%s, ocr=%s)",
-                project_id,
-                n_src,
-                project.extractor_backend,
-                bool(project.enable_ocr),
-            )
             documents: list[dict[str, Any]] = []
             loop = asyncio.get_running_loop()
-            for si, src in enumerate(ordered_sources, start=1):
-                base_progress = 2 + int(3 * si / max(1, n_src))
+
+            if not ordered_sources and not project.research_mode:
+                raise RuntimeError("Nessun documento né ricerca configurata")
+
+            if ordered_sources:
                 await manager.emit(
                     project_id,
                     {
                         "stage": "extracting",
-                        "message": f"Estrazione {src.filename} ({si}/{n_src})",
-                        "progress": base_progress,
-                        "detail": f"documento {si} di {n_src}",
+                        "node": "extract",
+                        "message": "Estrazione PDF",
+                        "progress": 2,
                     },
                 )
 
-                # Bridge the (synchronous) extractor's progress callbacks back
-                # onto the event loop so Docling chunk milestones stream live to
-                # the UI while extraction runs off-thread (keeps the loop free).
-                def _progress_cb(event: dict, _base: int = base_progress) -> None:
-                    event.setdefault("progress", _base)
-                    asyncio.run_coroutine_threadsafe(
-                        manager.emit(project_id, event), loop
-                    )
-
-                try:
-                    doc = await asyncio.to_thread(
-                        extractor.extract, Path(src.path), figures_dir, _progress_cb
-                    )
-                except Exception as exc:  # noqa: BLE001 - skip a broken file, keep going
-                    logger.exception("Estrazione fallita per %s: %s", src.filename, exc)
+                extractor = get_extractor(
+                    project.extractor_backend,
+                    enable_ocr=bool(project.enable_ocr),
+                    pipeline_config=project.pipeline_config,
+                    ocr_lang=project.ocr_lang,
+                )
+                logger.info(
+                    "Progetto %s: estrazione di %d sorgenti (backend=%s, ocr=%s)",
+                    project_id,
+                    n_src,
+                    project.extractor_backend,
+                    bool(project.enable_ocr),
+                )
+                for si, src in enumerate(ordered_sources, start=1):
+                    base_progress = 2 + int(3 * si / max(1, n_src))
                     await manager.emit(
                         project_id,
                         {
                             "stage": "extracting",
-                            "message": f"Estrazione fallita: {src.filename}",
-                            "level": "error",
-                            "detail": str(exc)[:200],
+                            "node": "extract",
+                            "message": f"Estrazione {src.filename} ({si}/{n_src})",
+                            "progress": base_progress,
+                            "detail": f"documento {si} di {n_src}",
                         },
                     )
-                    continue
-                src.n_pages = doc.n_pages
-                # Captions available for every figure of this source (extracted
-                # now + the user's mandatory picks).
-                all_figs = list(
-                    dict.fromkeys(doc.figures + mandatory_by_name.get(src.filename, []))
-                )
-                doc_captions = {
-                    rel: captions_by_path[rel]
-                    for rel in all_figs
-                    if rel in captions_by_path
-                }
-                documents.append(
-                    {
-                        "filename": doc.filename,
-                        "full_text": doc.full_text(),
-                        "figure_captions": doc_captions,
-                        "mandatory_figures": mandatory_by_name.get(src.filename, []),
-                    }
-                )
-                logger.info(
-                    "Estratto %s: %d pagine, %d figure, %d caratteri di testo",
-                    src.filename,
-                    doc.n_pages,
-                    len(all_figs),
-                    len(doc.full_text()),
-                )
-            await session.commit()
 
-            if not documents:
+                    def _progress_cb(event: dict, _base: int = base_progress) -> None:
+                        event.setdefault("progress", _base)
+                        asyncio.run_coroutine_threadsafe(
+                            manager.emit(project_id, event), loop
+                        )
+
+                    try:
+                        doc = await asyncio.to_thread(
+                            extractor.extract, Path(src.path), figures_dir, _progress_cb
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.exception(
+                            "Estrazione fallita per %s: %s", src.filename, exc
+                        )
+                        await manager.emit(
+                            project_id,
+                            {
+                                "stage": "extracting",
+                                "node": "extract",
+                                "message": f"Estrazione fallita: {src.filename}",
+                                "level": "error",
+                                "detail": str(exc)[:200],
+                            },
+                        )
+                        continue
+                    src.n_pages = doc.n_pages
+                    all_figs = list(
+                        dict.fromkeys(
+                            doc.figures + mandatory_by_name.get(src.filename, [])
+                        )
+                    )
+                    doc_captions = {
+                        rel: captions_by_path[rel]
+                        for rel in all_figs
+                        if rel in captions_by_path
+                    }
+                    documents.append(
+                        {
+                            "filename": doc.filename,
+                            "full_text": doc.full_text(),
+                            "figure_captions": doc_captions,
+                            "mandatory_figures": mandatory_by_name.get(
+                                src.filename, []
+                            ),
+                        }
+                    )
+                    logger.info(
+                        "Estratto %s: %d pagine, %d figure, %d caratteri di testo",
+                        src.filename,
+                        doc.n_pages,
+                        len(all_figs),
+                        len(doc.full_text()),
+                    )
+                await session.commit()
+
+            if not documents and not project.research_mode:
                 raise RuntimeError("Nessun documento estratto correttamente")
 
-            # ---- Pipeline ----
+            # ── Build web_tool_config for research mode ─────────────────────
+            web_tool_config: dict[str, Any] = {}
+            if project.research_mode and project.web_tool_id:
+                web_tool = await session.get(WebToolConfig, project.web_tool_id)
+                if web_tool and web_tool.is_active:
+                    web_tool_config = {
+                        "tool_type": web_tool.tool_type,
+                        "api_key": decrypt_api_key(web_tool.api_key_encrypted)
+                        if web_tool.api_key_encrypted
+                        else "",
+                        "base_url": web_tool.base_url or "",
+                        "params": web_tool.params or {},
+                    }
+                    logger.info("Research mode: tool=%s", web_tool.tool_type)
+
+            # ── Pipeline ────────────────────────────────────────────────────
             final = await run_pipeline(
                 documents=documents,
                 user_prompt=project.user_prompt or "",
@@ -211,6 +253,13 @@ async def run_generation(
                 structure_hint=structure_hint,
                 progress=progress,
                 judge_vision=bool(project.judge_vision),
+                writer_use_knowledge=bool(project.writer_use_knowledge),
+                user_sources=list(project.user_sources)
+                if project.user_sources
+                else None,
+                research_mode=bool(project.research_mode),
+                web_tool_config=web_tool_config,
+                user_figure_placements=user_figure_placements,
             )
 
             # ---- Persist plan/sections ----

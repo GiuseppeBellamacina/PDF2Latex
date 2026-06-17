@@ -54,7 +54,10 @@ async def regenerate_section(
     by_name = {s.filename: s for s in sources}
 
     extractor = get_extractor(
-        project.extractor_backend, enable_ocr=bool(project.enable_ocr)
+        project.extractor_backend,
+        enable_ocr=bool(project.enable_ocr),
+        pipeline_config=project.pipeline_config,
+        ocr_lang=project.ocr_lang,
     )
     documents_by_name: dict[str, str] = {}
     for fname in source_filenames:

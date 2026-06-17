@@ -35,9 +35,12 @@ class Settings(BaseSettings):
     bibtex_bin: str = "bibtex"
     latex_compile_passes: int = 2
     latex_lint: bool = True  # deterministic repair pass before pdflatex
+    latex_template: str = "default"  # default | paper | thesis-oneside | thesis-twoside
 
     # PDF extraction
+    # Deprecated: legacy fallback when no pipeline_config is set.
     extractor_backend: str = "hybrid"  # hybrid | pymupdf | docling
+    # Deprecated: legacy fallback. OCR is now auto-enabled from pipeline_config.
     enable_ocr: bool = False
     ocr_lang: str = "ita+eng"  # tesseract language(s); '+' to combine
     # Explicit path to the tesseract executable. Leave empty to auto-detect:
@@ -57,16 +60,9 @@ class Settings(BaseSettings):
     extraction_cache: bool = True  # cache Docling markdown by file hash
     dedup_headers_footers: bool = True  # strip recurring page headers/footers
 
-    # Composable extraction pipeline (dashboard). Per-stage tool choices are
-    # stored per-project (Project.pipeline_config); these are global defaults
-    # and model identifiers for the heavier, GPU-backed engines.
-    ocr_engine: str = "tesseract"  # default OCR engine when none is configured
     # Hugging Face model id for the dots.ocr vision-OCR engine (downloaded on
     # first use into the local HF cache; runs fully offline afterwards).
     dots_ocr_model: str = "rednote-hilab/dots.ocr"
-    # Device hint for the GPU-capable engines (paddleocr/surya/dots_ocr/...).
-    # "auto" lets each engine pick CUDA when available and fall back to CPU.
-    pipeline_device: str = "auto"  # auto | cuda | cpu
 
     # LLM orchestration
     llm_max_concurrency: int = 4  # max simultaneous LLM calls (fan-out cap)
@@ -82,7 +78,24 @@ class Settings(BaseSettings):
     # Char budgets (per chunk / per section) to avoid silent truncation.
     analyzer_chunk_chars: int = 16000  # map-reduce chunk size for long docs
     analyzer_max_chunks: int = 12  # safety cap on chunks per document
-    writer_source_chars: int = 14000  # relevance-selected source budget
+    writer_source_chars: int = 14000  # relevance-selected source budget (per section)
+    # When a section has many source files, each gets up to this total cap
+    # instead of a shrinking per-source budget. 0 = no cap.
+    writer_max_source_chars: int = 50000
+    # If a written section falls below this character count, a second
+    # expansion pass adds detail, examples and context from the source.
+    writer_expand_threshold: int = 600
+    # Let the writer supplement with its own knowledge when source
+    # material is insufficient on a topic (no web search, LLM knowledge).
+    writer_use_knowledge: bool = False
+
+    # Diamond-parallel quality checks (best-effort, never block the pipeline).
+    # ``coherence_enabled``: compare established facts across chapters for
+    # contradictions and inconsistent terminology.
+    coherence_enabled: bool = True
+    # ``citations_enabled``: audit citation compliance — verify user-provided
+    # sources are cited, flag unknown citation keys, missed source references.
+    citations_enabled: bool = True
 
     # Judge: after a successful compile, an LLM "judge" inspects the overall
     # document structure (intro/conclusion, chapter order, balance, duplicates,
@@ -118,8 +131,14 @@ class Settings(BaseSettings):
     overview_enabled: bool = True
     overview_min_chapters: int = 3  # also triggered when len(documents) > 1
 
-    # Defaults
-    default_language: str = "italian"
+    # ── Web Research (research-based document generation) ────────────────
+    # When no PDFs are uploaded, the pipeline can research the topic on the
+    # web and build a document from the results (STORM-style).
+    research_max_queries: int = 5  # max parallel search queries per research run
+    research_results_per_query: int = 5  # top results to consider per query
+    research_fetch_pages: bool = True  # fetch full page content (not just snippets)
+    research_max_fetch_concurrency: int = 4  # max simultaneous page fetches
+    research_page_max_chars: int = 8000  # cap fetched page text for LLM budgets
 
     # CORS
     cors_origins: list[str] = [

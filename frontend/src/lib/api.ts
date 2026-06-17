@@ -38,6 +38,9 @@ export interface Figure {
   caption: string | null;
   score: number | null;
   suggested: boolean | null;
+  user_uploaded: boolean | null;
+  target_section_title: string | null;
+  custom_caption: string | null;
 }
 
 export interface Section {
@@ -64,7 +67,13 @@ export interface Project {
   structure_hint: string | null;
   extractor_backend: string | null;
   enable_ocr: boolean | null;
+  ocr_lang: string | null;
   judge_vision: boolean | null;
+  latex_template: string | null;
+  writer_use_knowledge: boolean | null;
+  research_mode: boolean | null;
+  web_tool_id: number | null;
+  user_sources: { authors: string; title: string; year: string; venue: string }[] | null;
   pipeline_config: Record<string, string> | null;
   output_tex_path: string | null;
   output_pdf_path: string | null;
@@ -89,10 +98,17 @@ export interface ProjectUpdate {
   structure_hint?: string;
   extractor_backend?: string;
   enable_ocr?: boolean;
+  ocr_lang?: string | null;
   judge_vision?: boolean;
+  latex_template?: string | null;
+  writer_use_knowledge?: boolean;
+  research_mode?: boolean;
+  web_tool_id?: number | null;
+  user_sources?: { authors: string; title: string; year: string; venue: string }[] | null;
   pipeline_config?: Record<string, string>;
   source_order?: number[];
   mandatory_figure_ids?: number[];
+  figure_updates?: { id: number; custom_caption?: string; target_section_title?: string }[];
 }
 
 export interface Backends {
@@ -149,6 +165,31 @@ export interface ProjectFileSave {
   content: string;
 }
 
+export interface WebTool {
+  id: number;
+  name: string;
+  tool_type: string;
+  base_url: string | null;
+  params: Record<string, unknown> | null;
+  is_active: boolean;
+  has_api_key: boolean;
+}
+
+export interface WebToolInput {
+  name: string;
+  tool_type: string;
+  api_key?: string | null;
+  base_url?: string | null;
+  params?: Record<string, unknown> | null;
+  is_active?: boolean;
+}
+
+export interface LatexTemplate {
+  id: string;
+  label: string;
+  description: string;
+}
+
 const BASE = "/api";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -161,6 +202,26 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  // Templates
+  listTemplates: () => req<LatexTemplate[]>("/templates"),
+
+  // Web Tools
+  listWebTools: () => req<WebTool[]>("/webtools"),
+  createWebTool: (data: WebToolInput) =>
+    req<WebTool>("/webtools", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }),
+  updateWebTool: (id: number, data: Partial<WebToolInput>) =>
+    req<WebTool>(`/webtools/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }),
+  deleteWebTool: (id: number) =>
+    req<{ ok: boolean }>(`/webtools/${id}`, { method: "DELETE" }),
+
   // Providers
   listProviders: () => req<Provider[]>("/providers"),
   createProvider: (data: ProviderInput) =>
@@ -299,6 +360,36 @@ export const api = {
     const file = relPath.split("/").pop() ?? relPath;
     return `${BASE}/projects/${projectId}/figures/${file}`;
   },
+  // User-uploaded figure management
+  uploadUserFigure: (
+    projectId: string,
+    file: File,
+    caption: string,
+    targetSectionTitle: string,
+  ): Promise<Project> => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("caption", caption);
+    form.append("target_section_title", targetSectionTitle);
+    return req<Project>(`/projects/${projectId}/figures/upload`, {
+      method: "POST",
+      body: form,
+    });
+  },
+  updateUserFigure: (
+    projectId: string,
+    figureId: number,
+    data: { custom_caption?: string; target_section_title?: string },
+  ): Promise<Project> =>
+    req<Project>(`/projects/${projectId}/figures/${figureId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }),
+  deleteUserFigure: (projectId: string, figureId: number): Promise<Project> =>
+    req<Project>(`/projects/${projectId}/figures/${figureId}`, {
+      method: "DELETE",
+    }),
   downloadUrl: (id: string, kind: "tex" | "pdf") =>
     `${BASE}/projects/${id}/download/${kind}`,
   // Inline PDF URL for in-browser preview (served with Content-Disposition: inline).
