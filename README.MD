@@ -236,6 +236,126 @@ Le chiavi API sono salvate **cifrate** (Fernet) nel database locale.
 
 ---
 
+## Dipendenze opzionali
+
+Il backend usa **extras** di Python (PEP 508) per mantenere snello il core.
+Solo le dipendenze essenziali sono installate con `uv sync`; gli strumenti opzionali
+vengono aggiunti tramite flag `--extra`.
+
+### Comandi rapidi
+
+```pwsh
+# Solo le dipendenze obbligatorie (FastAPI, LangGraph, PyMuPDF, ...)
+uv sync
+
+# Aggiungi tutti gli optional che ti servono, es.:
+uv sync --extra structure-docling --extra ocr-tesseract --extra math-nougat
+```
+
+### Extra disponibili
+
+| Extra | Pacchetto(i) | A cosa serve | Note |
+|-------|-------------|-------------|------|
+| **Structure / Tabelle** | | | |
+| `structure-docling` | `docling>=2.0` | Estrazione struttura & tabelle (IBM) | Default raccomandato |
+| `structure-marker` | `marker-pdf>=1.0` | Conversione PDF → Markdown | Alternativa a Docling |
+| `structure-mineru` | `magic-pdf>=1.0` | Estrazione struttura (MinerU) | Alternativa a Docling |
+| **OCR (scansioni)** | | | |
+| `ocr-tesseract` | `pytesseract>=0.3.10` | OCR via Tesseract | Richiede binario `tesseract` nel PATH |
+| `ocr-rapidocr` | `rapidocr-onnxruntime>=1.3` | OCR via RapidOCR | ⚠️ Conflitto `opencv-python` con math extras |
+| `ocr-paddle` | `paddleocr>=2.7`, `paddlepaddle>=2.6` | OCR via PaddleOCR | |
+| `ocr-surya` | `surya-ocr>=0.6` | OCR via Surya | |
+| `ocr-dots` | `transformers>=4.44`, `torch>=2.2` | OCR via dots.ocr | Richiede GPU per performance |
+| **Matematica / Equazioni** | | | |
+| `math-pix2tex` | `pix2tex>=0.1.2` | LaTeX da immagini di equazioni (LaTeX-OCR) | |
+| `math-nougat` | `nougat-ocr>=0.1.17` | Estrazione math (Meta) | Richiede `albumentations<2.0`, `opencv-python-headless<4.11` |
+| **Web & Ricerca** | | | |
+| `web-trafilatura` | `trafilatura>=1.12` | Estrazione testo pulito da pagine web | Rimuove nav, footer, ads |
+| `research-tavily` | `tavily-python>=0.5` | Search API ottimizzata per AI (Tavily) | Richiede API key |
+| **Sviluppo** | | | |
+| `dev` | `ruff>=0.6`, `pytest>=8.0`, `pytest-asyncio>=0.24` | Lint, formattazione, test | |
+
+### Come installare
+
+```pwsh
+# Esempio: Docling per struttura + Tesseract per OCR + Nougat per math
+uv sync --extra structure-docling --extra ocr-tesseract --extra math-nougat
+
+# Esempio: tutti gli OCR + trafilatura per pagine web
+uv sync --extra ocr-tesseract --extra ocr-rapidocr --extra ocr-surya --extra web-trafilatura
+
+# Esempio: sviluppo completo (tutti gli extra + dev)
+uv sync --extra structure-docling --extra structure-marker --extra structure-mineru \
+        --extra ocr-tesseract --extra ocr-rapidocr --extra ocr-paddle \
+        --extra ocr-surya --extra ocr-dots \
+        --extra math-pix2tex --extra math-nougat \
+        --extra web-trafilatura --extra research-tavily \
+        --extra dev
+```
+
+> **Nota**: gli extra OCR `rapidocr` e `math-nougat`/`math-pix2tex` competono
+> sul modulo `cv2` (OpenCV). Installa solo quelli che ti servono davvero.
+
+### Installare Tesseract (sistema)
+
+L'extra `ocr-tesseract` installa solo il **wrapper Python** (`pytesseract`).
+Il motore OCR vero e proprio — il **binario `tesseract`** — va installato
+separatamente a livello di sistema.
+
+#### Windows
+
+```pwsh
+# Via Chocolatey (raccomandato):
+choco install tesseract
+
+# Via winget:
+winget install UB-Mannheim.TesseractOCR
+
+# Manuale: scarica l'installer da
+# https://github.com/UB-Mannheim/tesseract/wiki
+```
+
+Dopo l'installazione, verifica che funzioni:
+
+```pwsh
+tesseract --version
+```
+
+Se il binario non è nel PATH, impostalo esplicitamente nel file `.env`:
+
+```ini
+PDF2TEX_TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
+```
+
+#### Linux (Ubuntu/Debian)
+
+```bash
+sudo apt install tesseract-ocr tesseract-ocr-ita tesseract-ocr-eng
+```
+
+#### macOS
+
+```bash
+brew install tesseract tesseract-lang
+```
+
+#### Lingue aggiuntive
+
+Per supportare lingue diverse dall'inglese, installa i language pack:
+
+```bash
+# Windows (Chocolatey)
+choco install tesseract-languages
+
+# Linux
+sudo apt install tesseract-ocr-ita tesseract-ocr-fra tesseract-ocr-deu
+
+# macOS
+brew install tesseract-lang
+```
+
+---
+
 ## Configurazione
 
 Tutte le impostazioni sono in `backend/.env` con prefisso `PDF2TEX_`. Copia

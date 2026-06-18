@@ -232,21 +232,39 @@ async def research_topic(
     topic: str,
     language: str,
     llm_config: dict[str, Any],
-    web_tool_config: dict[str, Any],
+    web_tool_configs: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Run the full research pipeline: perspectives → queries → search → fetch → synthesize.
+
+    Searches EVERY assigned tool for EACH query in parallel, merging and
+    deduplicating results before synthesis. This gives the LLM the broadest
+    possible coverage from all configured search engines.
 
     Returns a list of ``SourceAnalysis``-compatible dicts, each with a
     ``filename`` key set to ``\"Web: <query>\"`` so downstream nodes can
     distinguish web-sourced analyses.
     """
-    adapter = get_search_adapter(web_tool_config)
-    if adapter is None:
-        logger.warning(
-            "No web search adapter available for tool_type=%s; skipping research",
-            web_tool_config.get("tool_type"),
-        )
+    # Create all adapters from the list of configs.
+    # Each config gets a reference to the full resolved list so adapters like
+    # WebAgent can auto-resolve API keys for their nested search_tools.
+    adapters: list[WebSearchAdapter] = []
+    for config in web_tool_configs:
+        config["_resolved_web_tools"] = web_tool_configs
+        adapter = get_search_adapter(config)
+        if adapter is not None:
+            adapters.append(adapter)
+        else:
+            logger.warning(
+                "No web search adapter available for tool_type=%s; skipping",
+                config.get("tool_type"),
+            )
+
+    if not adapters:
+        logger.warning("No web search adapters available; skipping research")
         return []
+
+    tool_types = [a.tool_type for a in adapters]
+    logger.info("Research: using %d adapters: %s", len(adapters), ", ".join(tool_types))
 
     # 1. Generate diverse perspectives (STORM step 1).
     perspectives = await generate_perspectives(topic, language, llm_config)
@@ -268,27 +286,46 @@ async def research_topic(
         len(perspectives),
     )
 
-    # 2. Execute all queries in parallel.
-    async def _search_one(q: str) -> tuple[str, list[SearchResult]]:
-        try:
-            results = await adapter.search(q)
-            return q, results
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Search failed for query '%s': %s", q, exc)
-            return q, []
+    # 3. Execute all queries against ALL adapters in parallel.
+    #    Each query is sent to every adapter; results are merged and
+    #    deduplicated by URL so the same page isn't listed twice.
+    async def _search_all(q: str) -> tuple[str, list[SearchResult]]:
+        tasks = [adapter.search(q) for adapter in adapters]
+        gathered = await asyncio.gather(*tasks, return_exceptions=True)
+        merged: list[SearchResult] = []
+        seen_urls: set[str] = set()
+        for result in gathered:
+            if isinstance(result, Exception):
+                logger.warning("Search failed for query '%s': %s", q, result)
+                continue
+            if isinstance(result, list):
+                for r in result:
+                    key = r.url or r.title
+                    if key and key not in seen_urls:
+                        seen_urls.add(key)
+                        merged.append(r)
+                    elif not key:
+                        merged.append(r)
+        return q, merged
 
-    search_results = await asyncio.gather(*[_search_one(q) for q in queries])
+    search_results = await asyncio.gather(*[_search_all(q) for q in queries])
     all_results: list[tuple[str, list[SearchResult]]] = [
         (q, res) for q, res in search_results if res
     ]
+    total_hits = sum(len(res) for _, res in all_results)
     logger.info(
-        "Research: %d/%d queries returned results", len(all_results), len(queries)
+        "Research: %d/%d queries returned results (%d total hits across %d tools)",
+        len(all_results),
+        len(queries),
+        total_hits,
+        len(adapters),
     )
 
     if not all_results:
         return []
 
-    # 3. Optionally fetch full page content.
+    # 4. Optionally fetch full page content (use the first adapter for fetching).
+    primary_adapter = adapters[0]
     if settings.research_fetch_pages:
         all_urls: list[str] = []
         for _q, results in all_results:
@@ -296,7 +333,9 @@ async def research_topic(
                 if r.url and not r.content:
                     all_urls.append(r.url)
         if all_urls:
-            fetched = await fetch_pages_batch(adapter, list(dict.fromkeys(all_urls)))
+            fetched = await fetch_pages_batch(
+                primary_adapter, list(dict.fromkeys(all_urls))
+            )
             logger.info("Research: fetched %d pages", len(fetched))
             # Merge fetched content back into results.
             for _q, results in all_results:
@@ -304,7 +343,7 @@ async def research_topic(
                     if r.url in fetched and fetched[r.url]:
                         r.content = fetched[r.url]
 
-    # 4. Synthesize each query's results into a SourceAnalysis.
+    # 5. Synthesize each query's results into a SourceAnalysis.
     async def _synth_one(q: str, results: list[SearchResult]) -> dict[str, Any] | None:
         try:
             analysis = await synthesize_analysis(

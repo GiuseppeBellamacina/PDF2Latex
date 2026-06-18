@@ -1,5 +1,5 @@
 """Web search service: abstract interface over Tavily, Perplexity, Wikipedia,
-and custom HTTPX-based search APIs.
+and Web Agent (agentic LLM-driven search).
 
 Each tool is a thin adapter that accepts a query string and returns a list of
 ``SearchResult`` objects. The caller (``research_node``) doesn't need to know
@@ -9,7 +9,8 @@ which provider is wired underneath.
 - **Perplexity**: uses direct HTTPX calls to the Sonar API (OpenAI-compatible,
   no extra package needed).
 - **Wikipedia**: uses the free public REST API, no API key.
-- **Custom HTTPX**: generic adapter configurable entirely via params.
+- **Web Agent**: agentic LangGraph flow that lets the LLM iteratively
+  generate URLs, fetch pages, evaluate results, and decide when to stop.
 """
 
 from __future__ import annotations
@@ -25,6 +26,25 @@ import httpx
 from app.core.logging import get_logger
 
 logger = get_logger("web_search")
+
+
+def strip_html(text: str) -> str:
+    """Crude HTML-to-text conversion shared by adapters."""
+    text = re.sub(
+        r"<script[^>]*>.*?</script>",
+        " ",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    text = re.sub(
+        r"<style[^>]*>.*?</style>",
+        " ",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 @dataclass
@@ -70,21 +90,7 @@ class WebSearchAdapter:
                 resp = await client.get(url, headers={"User-Agent": "PDF2LaTeX/1.0"})
                 resp.raise_for_status()
                 text = resp.text
-                # Crude HTML stripping: remove scripts, styles, then tags.
-                text = re.sub(
-                    r"<script[^>]*>.*?</script>",
-                    " ",
-                    text,
-                    flags=re.DOTALL | re.IGNORECASE,
-                )
-                text = re.sub(
-                    r"<style[^>]*>.*?</style>",
-                    " ",
-                    text,
-                    flags=re.DOTALL | re.IGNORECASE,
-                )
-                text = re.sub(r"<[^>]+>", " ", text)
-                text = re.sub(r"\s+", " ", text).strip()
+                text = strip_html(text)
                 # Cap at ~8000 chars to stay within LLM context budgets.
                 return text[:8000]
         except Exception as exc:  # noqa: BLE001
@@ -314,80 +320,119 @@ class WikipediaAdapter(WebSearchAdapter):
 
 
 # --------------------------------------------------------------------------- #
-# Custom HTTPX adapter (generic search API)                                    #
+# Web Agent adapter (agentic LLM-driven search)                               #
 # --------------------------------------------------------------------------- #
 
 
-class CustomHttpxAdapter(WebSearchAdapter):
-    """Generic HTTPX-based search adapter.
+class WebAgentAdapter(WebSearchAdapter):
+    """Agentic web search powered by a LangGraph flow.
 
-    Configured entirely through ``base_url`` and ``params``. The adapter
-    POSTs a JSON payload to the configured endpoint and expects a JSON
-    response with a ``results`` array.
+    Instead of hitting a single REST endpoint, the Web Agent lets the LLM
+    iteratively plan search URLs, fetch their content via HTTPX, evaluate
+    what was found, and decide whether to continue or stop — all driven by
+    a small LangGraph loop.
 
-    params can include:
-      - ``headers``: extra HTTP headers (dict)
-      - ``json_template``: a dict with ``{query}`` placeholder that gets
-        interpolated before sending.
-      - ``results_path``: dot-separated JSON path to the results array
-        (e.g., ``"organic_results"`` or ``"data.items"``).
-      - ``title_key`` / ``url_key`` / ``snippet_key`` / ``content_key``:
-        keys within each result object.
-      - ``method``: "POST" (default) or "GET".
-      - ``query_param``: for GET requests, the query-string parameter name.
+    Configuration is entirely through params:
+      - ``max_iterations``: max loop rounds (default 3).
+      - ``llm_config``: dict with provider/model/API key for the agent LLM.
+        Falls back to the project's default LLM when not set.
+      - ``search_tools``: optional list of other web tool configs (e.g.
+        ``[{"tool_type": "wikipedia"}, {"tool_type": "tavily", ...}]``).
+        When provided, the Web Agent queries these first to get seed URLs,
+        then enters the iterative planner loop for deeper research.
+
+    API keys for ``search_tools`` are resolved automatically: the caller
+    (researcher) injects ``_resolved_web_tools`` into the config dict, and
+    ``_build_search_adapters`` looks up each tool by ``tool_type`` to get
+    its decrypted ``api_key``. This way Tavily/Perplexity work without the
+    user having to paste API keys into the JSON params.
     """
 
-    tool_type: ClassVar[str] = "custom_httpx"
+    tool_type: ClassVar[str] = "web_agent"
+
+    def __init__(self, config: dict[str, Any]) -> None:
+        super().__init__(config)
+        # Full web tool configs with decrypted API keys, injected by the
+        # researcher so search_tools sub-adapters can resolve credentials.
+        self._resolved_web_tools: list[dict[str, Any]] = list(
+            config.get("_resolved_web_tools") or []
+        )
 
     async def search(self, query: str) -> list[SearchResult]:
-        method = (self.params.get("method") or "POST").upper()
-        headers: dict[str, str] = dict(self.params.get("headers") or {})
-        json_template: dict[str, Any] = dict(
-            self.params.get("json_template") or {"q": "{query}"}
+        """Run the iterative Web Agent LangGraph flow and return collected results."""
+        from app.agents.web_agent import run_web_agent
+
+        max_iterations = int(self.params.get("max_iterations", 3))
+        # Build an LLM config from the adapter params, falling back to env defaults.
+        llm_config: dict[str, Any] = dict(self.params.get("llm_config") or {})
+        if not llm_config:
+            from app.core.config import settings as _settings
+
+            llm_config = {
+                "provider": _settings.llm_provider,
+                "model": _settings.llm_model,
+                "api_key": _settings.llm_api_key,
+                "base_url": _settings.llm_base_url,
+            }
+
+        return await run_web_agent(
+            query=query,
+            llm_config=llm_config,
+            max_iterations=max_iterations,
+            search_adapters=_build_search_adapters(
+                self.params, self._resolved_web_tools
+            ),
         )
-        results_path: str = self.params.get("results_path") or "results"
-        title_key: str = self.params.get("title_key") or "title"
-        url_key: str = self.params.get("url_key") or "url"
-        snippet_key: str = self.params.get("snippet_key") or "snippet"
-        content_key: str = self.params.get("content_key") or "content"
-        query_param: str = self.params.get("query_param") or "q"
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            if method == "GET":
-                resp = await client.get(
-                    self.base_url,
-                    params={
-                        query_param: query,
-                        **(self.params.get("extra_params") or {}),
-                    },
-                    headers=headers,
-                )
-            else:
-                body = _interpolate_template(json_template, query)
-                resp = await client.post(self.base_url, json=body, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
 
-        # Walk the results_path to find the results array.
-        items: list[dict[str, Any]] = _walk_json(data, results_path)
-        if not isinstance(items, list):
+# --------------------------------------------------------------------------- #
+# Helpers                                                                      #
+# --------------------------------------------------------------------------- #
+
+
+def _build_search_adapters(
+    params: dict[str, Any],
+    resolved_tools: list[dict[str, Any]] | None = None,
+) -> list[WebSearchAdapter] | None:
+    """Build search adapters from ``search_tools`` entries in params.
+
+    Each entry is a web tool config dict with at least ``tool_type``.
+    When ``resolved_tools`` is provided (list of full web tool configs with
+    decrypted ``api_key``), each entry's ``api_key`` is resolved by matching
+    ``tool_type`` — so Tavily/Perplexity work without the user pasting keys
+    into the JSON params.
+
+    Returns ``None`` when no search tools are configured, so the Web Agent
+    falls back to pure LLM-driven URL generation.
+    """
+    configs: list[dict[str, Any]] = list(params.get("search_tools") or [])
+    if not configs:
+        return None
+
+    # Resolve API keys from the full resolved web tool configs.
+    if resolved_tools:
+        for cfg in configs:
+            if cfg.get("api_key"):
+                continue  # already has an explicit key, don't override
+            target_type = (cfg.get("tool_type") or "").lower()
+            for rt in resolved_tools:
+                if (rt.get("tool_type") or "").lower() == target_type:
+                    key = rt.get("api_key", "")
+                    if key:
+                        cfg["api_key"] = key
+                    break
+
+    adapters: list[WebSearchAdapter] = []
+    for cfg in configs:
+        adapter = get_search_adapter(cfg)
+        if adapter is not None:
+            adapters.append(adapter)
+        else:
             logger.warning(
-                "Custom HTTPX search: results_path '%s' did not resolve to a list",
-                results_path,
+                "Web Agent: unknown search tool type '%s' in search_tools",
+                cfg.get("tool_type", "?"),
             )
-            items = []
-
-        results: list[SearchResult] = []
-        for r in items[: self.max_results]:
-            results.append(
-                SearchResult(
-                    title=str(r.get(title_key, "")),
-                    url=str(r.get(url_key, "")),
-                    snippet=str(r.get(snippet_key, ""))[:500],
-                    content=str(r.get(content_key, ""))[:8000],
-                )
-            )
-        return results
+    return adapters if adapters else None
 
 
 # --------------------------------------------------------------------------- #
@@ -406,7 +451,7 @@ def get_search_adapter(config: dict[str, Any]) -> WebSearchAdapter | None:
         "tavily": TavilyAdapter,
         "perplexity": PerplexityAdapter,
         "wikipedia": WikipediaAdapter,
-        "custom_httpx": CustomHttpxAdapter,
+        "web_agent": WebAgentAdapter,
     }
     cls = adapters.get(tool_type)
     if cls is None:
@@ -418,40 +463,6 @@ def get_search_adapter(config: dict[str, Any]) -> WebSearchAdapter | None:
 # --------------------------------------------------------------------------- #
 # Helpers                                                                      #
 # --------------------------------------------------------------------------- #
-
-
-def _interpolate_template(template: dict, query: str) -> dict:
-    """Recursively replace ``{query}`` in string values."""
-    out: dict[str, Any] = {}
-    for k, v in template.items():
-        if isinstance(v, str):
-            out[k] = v.replace("{query}", query)
-        elif isinstance(v, dict):
-            out[k] = _interpolate_template(v, query)
-        elif isinstance(v, list):
-            out[k] = [
-                _interpolate_template(item, query) if isinstance(item, dict) else item
-                for item in v
-            ]
-        else:
-            out[k] = v
-    return out
-
-
-def _walk_json(data: Any, path: str) -> Any:
-    """Walk a dot-separated path into a JSON object (e.g. ``'data.results'``)."""
-    current = data
-    for key in path.split("."):
-        if isinstance(current, dict):
-            current = current.get(key)
-        elif isinstance(current, list):
-            try:
-                current = current[int(key)]
-            except (ValueError, IndexError):
-                return None
-        else:
-            return None
-    return current
 
 
 def _coerce_domain_list(

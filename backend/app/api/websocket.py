@@ -40,9 +40,12 @@ async def generate_ws(websocket: WebSocket, project_key: str):
         config = await websocket.receive_json()
         provider_id = int(config["provider_id"])
         model = config.get("model")
+        role_providers = config.get("role_providers")
 
         if project_id not in active_jobs or active_jobs[project_id].done():
-            task = asyncio.create_task(run_generation(project_id, provider_id, model))
+            task = asyncio.create_task(
+                run_generation(project_id, provider_id, model, role_providers)
+            )
             active_jobs[project_id] = task
 
         # Keep the socket open until the client disconnects or job is done.

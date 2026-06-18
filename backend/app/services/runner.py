@@ -29,6 +29,7 @@ from app.db.models import (
 )
 from app.services.extractor import get_extractor
 from app.services.progress import manager
+from app.services.web_extractor import fetch_and_extract
 
 logger = get_logger("runner")
 
@@ -46,7 +47,10 @@ def _load_few_shot() -> str:
 
 
 async def run_generation(
-    project_id: int, provider_id: int, model: str | None = None
+    project_id: int,
+    provider_id: int,
+    model: str | None = None,
+    role_providers: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Run the entire generation for a project, streaming progress over WS."""
     async with async_session() as session:
@@ -97,6 +101,21 @@ async def run_generation(
                 )
 
         llm_config = build_llm_config(provider, model)
+
+        # ── Build per-role LLM configs from role_providers ─────────────────
+        role_configs: dict[str, dict[str, Any]] = {}
+        if role_providers:
+            for role, rp in role_providers.items():
+                rp_id = rp.get("provider_id")
+                if rp_id is None:
+                    continue
+                rp_provider = await session.get(ProviderConfig, rp_id)
+                if rp_provider is None:
+                    continue
+                role_configs[role] = build_llm_config(rp_provider, rp.get("model"))
+            if role_configs:
+                logger.info("Per-role providers: %s", list(role_configs.keys()))
+
         few_shot = _load_few_shot()
         language = project.language
 
@@ -136,17 +155,22 @@ async def run_generation(
                     {
                         "stage": "extracting",
                         "node": "extract",
-                        "message": "Estrazione PDF",
+                        "message": "Estrazione sorgenti",
                         "progress": 2,
                     },
                 )
 
-                extractor = get_extractor(
-                    project.extractor_backend,
-                    enable_ocr=bool(project.enable_ocr),
-                    pipeline_config=project.pipeline_config,
-                    ocr_lang=project.ocr_lang,
-                )
+                # Only initialise the PDF extractor if there is at least one PDF.
+                has_pdf = any(s.source_type == "pdf" for s in ordered_sources)
+                extractor = None
+                if has_pdf:
+                    extractor = get_extractor(
+                        project.extractor_backend,
+                        enable_ocr=bool(project.enable_ocr),
+                        pipeline_config=project.pipeline_config,
+                        ocr_lang=project.ocr_lang,
+                    )
+
                 logger.info(
                     "Progetto %s: estrazione di %d sorgenti (backend=%s, ocr=%s)",
                     project_id,
@@ -156,27 +180,140 @@ async def run_generation(
                 )
                 for si, src in enumerate(ordered_sources, start=1):
                     base_progress = 2 + int(3 * si / max(1, n_src))
+                    stype = src.source_type or "pdf"
+                    label = {
+                        "pdf": "PDF",
+                        "text": "Testo",
+                        "image": "Immagine",
+                        "url": "URL",
+                    }.get(stype, stype)
                     await manager.emit(
                         project_id,
                         {
                             "stage": "extracting",
                             "node": "extract",
-                            "message": f"Estrazione {src.filename} ({si}/{n_src})",
+                            "message": f"{label} {src.filename} ({si}/{n_src})",
                             "progress": base_progress,
-                            "detail": f"documento {si} di {n_src}",
+                            "detail": f"sorgente {si} di {n_src}",
                         },
                     )
 
-                    def _progress_cb(event: dict, _base: int = base_progress) -> None:
-                        event.setdefault("progress", _base)
-                        asyncio.run_coroutine_threadsafe(
-                            manager.emit(project_id, event), loop
-                        )
-
                     try:
-                        doc = await asyncio.to_thread(
-                            extractor.extract, Path(src.path), figures_dir, _progress_cb
-                        )
+                        if stype == "pdf":
+
+                            def _progress_cb(
+                                event: dict, _base: int = base_progress
+                            ) -> None:
+                                event.setdefault("progress", _base)
+                                asyncio.run_coroutine_threadsafe(
+                                    manager.emit(project_id, event), loop
+                                )
+
+                            doc = await asyncio.to_thread(
+                                extractor.extract,
+                                Path(src.path),
+                                figures_dir,
+                                _progress_cb,
+                            )
+                            src.n_pages = doc.n_pages
+                            all_figs = list(
+                                dict.fromkeys(
+                                    doc.figures
+                                    + mandatory_by_name.get(src.filename, [])
+                                )
+                            )
+                            doc_captions = {
+                                rel: captions_by_path[rel]
+                                for rel in all_figs
+                                if rel in captions_by_path
+                            }
+                            documents.append(
+                                {
+                                    "filename": doc.filename,
+                                    "full_text": doc.full_text(),
+                                    "figure_captions": doc_captions,
+                                    "mandatory_figures": mandatory_by_name.get(
+                                        src.filename, []
+                                    ),
+                                }
+                            )
+                            logger.info(
+                                "Estratto %s: %d pagine, %d figure",
+                                src.filename,
+                                doc.n_pages,
+                                len(all_figs),
+                            )
+
+                        elif stype == "text":
+                            text = Path(src.path).read_text(
+                                encoding="utf-8", errors="replace"
+                            )
+                            documents.append(
+                                {
+                                    "filename": src.filename,
+                                    "full_text": text,
+                                    "figure_captions": {},
+                                    "mandatory_figures": [],
+                                }
+                            )
+                            logger.info(
+                                "Letto file di testo %s: %d caratteri",
+                                src.filename,
+                                len(text),
+                            )
+
+                        elif stype == "url":
+                            text = await fetch_and_extract(src.path)
+                            documents.append(
+                                {
+                                    "filename": src.filename,
+                                    "full_text": text,
+                                    "figure_captions": {},
+                                    "mandatory_figures": [],
+                                }
+                            )
+                            logger.info(
+                                "Scaricato URL %s: %d caratteri",
+                                src.filename,
+                                len(text),
+                            )
+
+                        elif stype == "image":
+                            # Copy image into figures_dir and add as mandatory figure.
+                            img_path = Path(src.path)
+                            dest = figures_dir / img_path.name
+                            if img_path != dest:
+                                dest.write_bytes(img_path.read_bytes())
+                            rel = f"figures/{img_path.name}"
+                            # Attempt OCR (best-effort — pytesseract may not be installed).
+                            ocr_text = ""
+                            try:
+                                import pytesseract
+                                from PIL import Image
+
+                                ocr_text = pytesseract.image_to_string(
+                                    Image.open(img_path)
+                                ).strip()
+                                logger.info(
+                                    "OCR su %s: %d caratteri",
+                                    src.filename,
+                                    len(ocr_text),
+                                )
+                            except Exception:
+                                pass
+                            full_text = (
+                                ocr_text if ocr_text else f"[Immagine: {src.filename}]"
+                            )
+                            documents.append(
+                                {
+                                    "filename": src.filename,
+                                    "full_text": full_text,
+                                    "figure_captions": {},
+                                    "mandatory_figures": [rel],
+                                }
+                            )
+                            logger.info("Immagine registrata: %s", src.filename)
+
                     except Exception as exc:  # noqa: BLE001
                         logger.exception(
                             "Estrazione fallita per %s: %s", src.filename, exc
@@ -192,53 +329,74 @@ async def run_generation(
                             },
                         )
                         continue
-                    src.n_pages = doc.n_pages
-                    all_figs = list(
-                        dict.fromkeys(
-                            doc.figures + mandatory_by_name.get(src.filename, [])
-                        )
-                    )
-                    doc_captions = {
-                        rel: captions_by_path[rel]
-                        for rel in all_figs
-                        if rel in captions_by_path
-                    }
-                    documents.append(
-                        {
-                            "filename": doc.filename,
-                            "full_text": doc.full_text(),
-                            "figure_captions": doc_captions,
-                            "mandatory_figures": mandatory_by_name.get(
-                                src.filename, []
-                            ),
-                        }
-                    )
-                    logger.info(
-                        "Estratto %s: %d pagine, %d figure, %d caratteri di testo",
-                        src.filename,
-                        doc.n_pages,
-                        len(all_figs),
-                        len(doc.full_text()),
-                    )
+
                 await session.commit()
 
             if not documents and not project.research_mode:
                 raise RuntimeError("Nessun documento estratto correttamente")
 
-            # ── Build web_tool_config for research mode ─────────────────────
-            web_tool_config: dict[str, Any] = {}
-            if project.research_mode and project.web_tool_id:
-                web_tool = await session.get(WebToolConfig, project.web_tool_id)
-                if web_tool and web_tool.is_active:
-                    web_tool_config = {
-                        "tool_type": web_tool.tool_type,
-                        "api_key": decrypt_api_key(web_tool.api_key_encrypted)
-                        if web_tool.api_key_encrypted
-                        else "",
-                        "base_url": web_tool.base_url or "",
-                        "params": web_tool.params or {},
+            # ── LLM-based figure re-scoring (vlm pipeline mode) ────────────
+            pipeline_cfg = project.pipeline_config or {}
+            if pipeline_cfg.get("figure_scoring") == "vlm" and figures:
+                logger.info(
+                    "Progetto %s: LLM figure scoring attivo su %d figure",
+                    project_id,
+                    len(figures),
+                )
+                await manager.emit(
+                    project_id,
+                    {
+                        "stage": "extracting",
+                        "node": "extract",
+                        "message": f"Scoring {len(figures)} figure con LLM…",
+                        "detail": "modello visione",
+                    },
+                )
+                from app.services.figure_scorer import score_figures_with_llm
+
+                # Build lightweight figure dicts from the DB records.
+                fig_dicts = [
+                    {
+                        "rel_path": f.rel_path,
+                        "context_text": f.context_text or "",
+                        "score": f.score or 0.0,
+                        "suggested": f.suggested or False,
                     }
-                    logger.info("Research mode: tool=%s", web_tool.tool_type)
+                    for f in figures
+                ]
+                await score_figures_with_llm(fig_dicts, figures_dir, llm_config)
+                # Write back the LLM scores to the DB.
+                for fig, fd in zip(figures, fig_dicts):
+                    # Only auto-set mandatory when the user hasn't manually
+                    # toggled it (mandatory still matches heuristic suggested).
+                    was_auto = fig.mandatory == fig.suggested
+                    fig.score = fd["score"]
+                    fig.suggested = fd["suggested"]
+                    if was_auto:
+                        fig.mandatory = fd["suggested"]
+                await session.commit()
+                logger.info("Progetto %s: LLM figure scoring completato", project_id)
+
+            # ── Build web_tool_configs for research mode ────────────────────
+            web_tool_configs: list[dict[str, Any]] = []
+            if project.research_mode and project.web_tool_ids:
+                for tid in project.web_tool_ids:
+                    web_tool = await session.get(WebToolConfig, tid)
+                    if web_tool and web_tool.is_active:
+                        web_tool_configs.append(
+                            {
+                                "tool_type": web_tool.tool_type,
+                                "api_key": decrypt_api_key(web_tool.api_key_encrypted)
+                                if web_tool.api_key_encrypted
+                                else "",
+                                "base_url": web_tool.base_url or "",
+                                "params": web_tool.params or {},
+                            }
+                        )
+                        logger.info("Research mode: tool=%s", web_tool.tool_type)
+                if web_tool_configs:
+                    web_tool_configs[0]["max_queries"] = project.research_max_queries
+                    logger.info("Research mode: %d tools active", len(web_tool_configs))
 
             # ── Pipeline ────────────────────────────────────────────────────
             final = await run_pipeline(
@@ -258,8 +416,9 @@ async def run_generation(
                 if project.user_sources
                 else None,
                 research_mode=bool(project.research_mode),
-                web_tool_config=web_tool_config,
+                web_tool_configs=web_tool_configs,
                 user_figure_placements=user_figure_placements,
+                role_configs=role_configs or None,
             )
 
             # ---- Persist plan/sections ----

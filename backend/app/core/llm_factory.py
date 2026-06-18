@@ -38,7 +38,18 @@ def create_llm(config: LLMConfig) -> BaseChatModel:
         case "fake":
             return FakeChatModel(model_name=config.model or "fake-echo")
 
-        case "openai" | "custom":
+        case (
+            "openai"
+            | "custom"
+            | "deepseek"
+            | "nvidia"
+            | "openrouter"
+            | "grok"
+            | "alibaba"
+            | "together"
+            | "groq"
+            | "mistral"
+        ):
             from langchain_openai import ChatOpenAI
 
             if config.api_key:

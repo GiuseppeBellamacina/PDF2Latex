@@ -92,7 +92,7 @@ export default function PipelineBuilder({
   }
 
   return (
-    <div className="space-y-0">
+    <div className="space-y-0 overflow-hidden">
       {desc.stages.map((stage, idx) => {
         const current = selected(stage.id, stage.selected);
         const isOff = stage.optional && current === "none";
@@ -121,7 +121,7 @@ export default function PipelineBuilder({
             </div>
 
             {/* Stage card */}
-            <div className="min-w-0 flex-1 pb-4">
+            <div className="relative z-10 min-w-0 flex-1 pb-4">
               <button
                 type="button"
                 onClick={() => toggleStage(stage.id)}

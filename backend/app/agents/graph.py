@@ -118,11 +118,20 @@ async def _emit(state: GraphState, event: dict[str, Any]) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Helpers                                                                       #
+# --------------------------------------------------------------------------- #
+def _get_config(state: GraphState, role: str) -> dict[str, Any]:
+    """Return the per-role LLM config if explicitly assigned, else the default."""
+    role_configs: dict[str, Any] = state.get("role_configs") or {}  # type: ignore[assignment]
+    return role_configs.get(role, state["llm_config"])
+
+
+# --------------------------------------------------------------------------- #
 # Nodes                                                                         #
 # --------------------------------------------------------------------------- #
 async def analyze_node(state: GraphState) -> dict[str, Any]:
     documents = state["documents"]
-    llm_config = state["llm_config"]
+    llm_config = _get_config(state, "analyzer")
     await _emit(
         state,
         {
@@ -168,9 +177,10 @@ async def research_node(state: GraphState) -> dict[str, Any]:
         return {"web_analyses": []}
 
     language = state.get("language", "italian")
-    llm_config = state["llm_config"]
-    web_tool_config = state.get("web_tool_config") or {}
+    llm_config = _get_config(state, "researcher")
+    web_tool_configs: list[dict[str, Any]] = state.get("web_tool_configs") or []
 
+    tool_types = [c.get("tool_type", "?") for c in web_tool_configs]
     await _emit(
         state,
         {
@@ -178,7 +188,7 @@ async def research_node(state: GraphState) -> dict[str, Any]:
             "node": "research",
             "message": f"Ricerca web: '{topic[:100]}'",
             "progress": 3,
-            "detail": f"tool: {web_tool_config.get('tool_type', 'wikipedia')}",
+            "detail": f"tools: {', '.join(tool_types) if tool_types else 'wikipedia'}",
         },
     )
 
@@ -188,7 +198,7 @@ async def research_node(state: GraphState) -> dict[str, Any]:
         topic=topic,
         language=language,
         llm_config=llm_config,
-        web_tool_config=web_tool_config,
+        web_tool_configs=web_tool_configs,
     )
 
     if not analyses:
@@ -260,7 +270,7 @@ async def plan_node(state: GraphState) -> dict[str, Any]:
         analyses=[dict(a) for a in state["analyses"]],
         user_prompt=state.get("user_prompt", ""),
         language=state.get("language", "italian"),
-        llm_config=state["llm_config"],
+        llm_config=_get_config(state, "planner"),
         structure_hint=state.get("structure_hint", ""),
     )
 
@@ -380,7 +390,7 @@ async def write_node(state: GraphState) -> dict[str, Any]:
         )
     few_shot = state.get("few_shot", "")
     language = state.get("language", "italian")
-    llm_config = state["llm_config"]
+    llm_config = _get_config(state, "writer")
 
     from app.core.config import settings as _settings
 
@@ -640,7 +650,7 @@ async def coherence_node(state: GraphState) -> dict[str, Any]:
 
     try:
         facts = state.get("established_facts", {}) or {}
-        result = await check_coherence(facts, state["llm_config"])
+        result = await check_coherence(facts, _get_config(state, "coherence"))
         await _emit(
             state,
             {
@@ -682,7 +692,7 @@ async def citation_node(state: GraphState) -> dict[str, Any]:
             sections=[dict(s) for s in sections],
             references_pool=[dict(r) for r in pool],
             user_sources=[dict(u) for u in user_sources] if user_sources else None,
-            llm_config=state["llm_config"],
+            llm_config=_get_config(state, "citations"),
         )
         uncited = len(result.get("uncited_user_sources", []))
         unknown = len(result.get("unknown_citations", []))
@@ -788,7 +798,7 @@ async def overview_node(state: GraphState) -> dict[str, Any]:
 
     try:
         verdict = await call_llm_structured(
-            state["llm_config"],
+            _get_config(state, "overview"),
             OVERVIEW_SYSTEM,
             user,
             schema=OverviewSchema,
@@ -1020,7 +1030,9 @@ async def review_node(state: GraphState) -> dict[str, Any]:
                     "detail": compile_error_excerpt(compile_log),
                 },
             )
-            latex = await review_document(latex, state["llm_config"], compile_log)
+            latex = await review_document(
+                latex, _get_config(state, "reviewer"), compile_log
+            )
             if _settings.latex_lint:
                 latex, _ = lint_latex(latex)
             latex, bib_content = _apply_bibliography(latex)
@@ -1089,7 +1101,7 @@ async def judge_node(state: GraphState) -> dict[str, Any]:
 
     verdict = await judge_structure(
         state["final_latex"],
-        state["llm_config"],
+        _get_config(state, "judge"),
         state.get("pdf_path"),
         state.get("compile_log"),
         use_vision=use_vision,
@@ -1120,7 +1132,7 @@ async def judge_node(state: GraphState) -> dict[str, Any]:
         },
     )
     revised = await revise_structure(
-        state["final_latex"], verdict.issues, state["llm_config"]
+        state["final_latex"], verdict.issues, _get_config(state, "judge")
     )
     if _settings.latex_lint:
         revised, _ = lint_latex(revised)
@@ -1223,8 +1235,9 @@ async def run_pipeline(
     writer_use_knowledge: bool | None = None,
     user_sources: list[dict[str, str]] | None = None,
     research_mode: bool = False,
-    web_tool_config: dict[str, Any] | None = None,
+    web_tool_configs: list[dict[str, Any]] | None = None,
     user_figure_placements: dict[str, list[tuple[str, str]]] | None = None,
+    role_configs: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run the full pipeline and return the final state."""
     from app.core.config import settings as _settings
@@ -1235,6 +1248,7 @@ async def run_pipeline(
         "user_prompt": user_prompt,
         "language": language,
         "llm_config": llm_config,
+        "role_configs": role_configs,
         "few_shot": few_shot,
         "work_dir": str(work_dir),
         "figures_dir": str(figures_dir) if figures_dir else None,
@@ -1252,7 +1266,7 @@ async def run_pipeline(
         ),
         "user_sources": user_sources or [],
         "research_mode": research_mode,
-        "web_tool_config": web_tool_config or {},
+        "web_tool_configs": web_tool_configs or [],
         "user_figure_placements": user_figure_placements or {},
     }
     # The produced keys (analyses/plan/sections/...) are filled in by the nodes;

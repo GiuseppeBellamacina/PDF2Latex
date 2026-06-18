@@ -52,6 +52,9 @@ class GraphState(TypedDict, total=False):
 
     # LLM config (serialized LLMConfig dict)
     llm_config: Required[dict[str, Any]]
+    # Per-role LLM overrides: {role_name: serialized_LLMConfig}. When a role
+    # has a config here, that role uses it; otherwise falls back to llm_config.
+    role_configs: dict[str, dict[str, Any]]
 
     # Per-run overrides (decided in the UI, not from global settings)
     judge_vision: bool
@@ -59,7 +62,7 @@ class GraphState(TypedDict, total=False):
 
     # Research mode (web-based research, no PDFs required)
     research_mode: bool
-    web_tool_config: dict[str, Any]  # serialized WebToolConfig for search
+    web_tool_configs: list[dict[str, Any]]  # serialized WebToolConfig list for search
 
     # Paths
     work_dir: str

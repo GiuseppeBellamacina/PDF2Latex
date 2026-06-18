@@ -160,6 +160,19 @@
     100% { transform: scale(2.2); opacity: 0; }
   }
 
+  /* ── Node state-entry pop (pending → active / active → done) ────────── */
+
+  @keyframes node-enter {
+    0% { transform: scale(0.92); }
+    40% { transform: scale(1.06); }
+    70% { transform: scale(0.98); }
+    100% { transform: scale(1); }
+  }
+
+  .animate-node-enter {
+    animation: node-enter 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
   .animate-spark-0  { animation: spark-0   0.65s ease-out infinite; }
   .animate-spark-60 { animation: spark-60  0.65s ease-out infinite; }
   .animate-spark-120{ animation: spark-120 0.65s ease-out infinite; }

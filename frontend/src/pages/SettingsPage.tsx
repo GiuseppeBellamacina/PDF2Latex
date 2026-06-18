@@ -1,46 +1,32 @@
 import {
   AlertTriangle,
-  Brain,
   Check,
   ChevronDown,
   Clock,
   Cpu,
   Globe,
-  Ghost,
   Pencil,
   Plus,
   Search,
-  Server,
+  Settings2,
   Trash2,
-  Wrench,
   X,
   Zap,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, type Provider, type ProviderInput, type WebToolInput } from "../lib/api";
 import { cn } from "../lib/utils";
+import { PROVIDER_COLORS, PROVIDER_ICONS } from "../lib/providerIcons";
 import { useAppStore } from "../stores/appStore";
 
 type TestResult = Awaited<ReturnType<typeof api.testProvider>>;
 
-const PROVIDER_TYPES = ["openai", "anthropic", "ollama", "custom", "fake"] as const;
-const WEB_TOOL_TYPES = ["tavily", "perplexity", "wikipedia", "custom_httpx"] as const;
-
-const PROVIDER_ICONS: Record<string, typeof Cpu> = {
-  openai: Cpu,
-  anthropic: Brain,
-  ollama: Server,
-  custom: Wrench,
-  fake: Ghost,
-};
-
-const PROVIDER_COLORS: Record<string, string> = {
-  openai: "text-emerald-500 bg-emerald-50 dark:bg-emerald-950/30",
-  anthropic: "text-amber-500 bg-amber-50 dark:bg-amber-950/30",
-  ollama: "text-blue-500 bg-blue-50 dark:bg-blue-950/30",
-  custom: "text-violet-500 bg-violet-50 dark:bg-violet-950/30",
-  fake: "text-ink-400 bg-ink-100 dark:bg-ink-800",
-};
+const PROVIDER_TYPES = [
+  "openai", "anthropic", "ollama", "custom", "fake",
+  "deepseek", "nvidia", "openrouter", "grok", "alibaba",
+  "together", "groq", "mistral",
+] as const;
+const WEB_TOOL_TYPES = ["tavily", "perplexity", "wikipedia", "web_agent"] as const;
 
 const KNOWN_MODELS: Record<string, string[]> = {
   openai: [
@@ -54,13 +40,32 @@ const KNOWN_MODELS: Record<string, string[]> = {
   ollama: ["llama3", "llama3.1", "mistral", "codellama", "gemma2", "phi3"],
   custom: [],
   fake: [],
+  deepseek: ["deepseek-chat", "deepseek-reasoner"],
+  nvidia: ["meta/llama-3.3-70b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct", "mistralai/mistral-large"],
+  openrouter: ["openai/gpt-4o", "anthropic/claude-3.5-sonnet", "google/gemini-2.0-flash", "meta-llama/llama-3.3-70b-instruct"],
+  grok: ["grok-2", "grok-2-vision"],
+  alibaba: ["qwen-max", "qwen-plus", "qwen-turbo", "qwen-vl-max"],
+  together: ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "mistralai/Mixtral-8x7B-Instruct-v0.1", "Qwen/Qwen2.5-72B-Instruct"],
+  groq: ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it", "deepseek-r1-distill-llama-70b"],
+  mistral: ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "codestral-latest"],
+};
+
+const DEFAULT_BASE_URLS: Record<string, string> = {
+  deepseek: "https://api.deepseek.com/v1",
+  nvidia: "https://integrate.api.nvidia.com/v1",
+  openrouter: "https://openrouter.ai/api/v1",
+  grok: "https://api.x.ai/v1",
+  alibaba: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+  together: "https://api.together.xyz/v1",
+  groq: "https://api.groq.com/openai/v1",
+  mistral: "https://api.mistral.ai/v1",
 };
 
 const WEBTOOL_HINTS: Record<string, string> = {
   tavily: "https://tavily.com — API key required",
   perplexity: "https://docs.perplexity.ai — API key required",
   wikipedia: "https://wikipedia.org — Free, no API key",
-  custom_httpx: "Any REST search API — configure base URL + JSON template",
+  web_agent: "Agentic search — LLM iteratively plans URLs, fetches and evaluates results",
 };
 
 const EMPTY: ProviderInput = {
@@ -84,6 +89,10 @@ export default function SettingsPage() {
   const { providers, webTools, loadProviders, loadWebTools } = useAppStore();
   const [form, setForm] = useState<ProviderInput>(EMPTY);
   const [webToolForm, setWebToolForm] = useState<WebToolInput>(EMPTY_WEBTOOL);
+  const [webAgentMaxIterations, setWebAgentMaxIterations] = useState(3);
+  const [webAgentProviderId, setWebAgentProviderId] = useState<number | null>(null);
+  const [webAgentModel, setWebAgentModel] = useState("");
+  const [webAgentSearchToolIds, setWebAgentSearchToolIds] = useState<Set<number>>(new Set());
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -108,8 +117,10 @@ export default function SettingsPage() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, [modelOpen]);
 
-  const needsKey = ["openai", "anthropic", "custom"].includes(form.provider_type);
-  const needsUrl = ["ollama", "custom"].includes(form.provider_type);
+  // All providers need an API key except local Ollama and offline Fake.
+  const needsKey = form.provider_type !== "ollama" && form.provider_type !== "fake";
+  // Providers that don't have a hardcoded SDK default need a base_url.
+  const needsUrl = form.provider_type !== "openai" && form.provider_type !== "anthropic" && form.provider_type !== "fake";
   const typeModels = KNOWN_MODELS[form.provider_type] ?? [];
   const hasKnownModels = typeModels.length > 0;
 
@@ -181,8 +192,40 @@ export default function SettingsPage() {
   async function createWeb() {
     setBusy(true);
     try {
-      await api.createWebTool(webToolForm);
+      const payload = { ...webToolForm };
+      if (webToolForm.tool_type === "web_agent") {
+        const params: Record<string, unknown> = {
+          max_iterations: webAgentMaxIterations,
+        };
+        if (webAgentProviderId) {
+          const provider = providers.find((p) => p.id === webAgentProviderId);
+          if (provider) {
+            params.llm_config = {
+              provider: provider.provider_type,
+              model: webAgentModel || provider.default_model || "",
+              ...(provider.base_url ? { base_url: provider.base_url } : {}),
+            };
+          }
+        } else if (webAgentModel) {
+          params.llm_config = { model: webAgentModel };
+        }
+        if (webAgentSearchToolIds.size > 0) {
+          params.search_tools = webTools
+            .filter((t) => webAgentSearchToolIds.has(t.id) && t.tool_type !== "web_agent")
+            .map((t) => ({
+              tool_type: t.tool_type,
+              ...(t.base_url ? { base_url: t.base_url } : {}),
+              ...(t.params ? { params: t.params } : {}),
+            }));
+        }
+        payload.params = params;
+      }
+      await api.createWebTool(payload);
       setWebToolForm(EMPTY_WEBTOOL);
+      setWebAgentMaxIterations(3);
+      setWebAgentProviderId(null);
+      setWebAgentModel("");
+      setWebAgentSearchToolIds(new Set());
       loadWebTools();
     } finally {
       setBusy(false);
@@ -223,18 +266,14 @@ export default function SettingsPage() {
           </div>
           <div>
             <label className="mb-1 block text-xs font-medium text-ink-500">Type</label>
-            <select
-              className="input"
+            <ProviderTypeSelect
               value={form.provider_type}
-              onChange={(e) => {
-                setForm({ ...form, provider_type: e.target.value, default_model: "" });
+              onChange={(t) => {
+                const defaultUrl = DEFAULT_BASE_URLS[t] ?? "";
+                setForm({ ...form, provider_type: t, default_model: "", base_url: defaultUrl });
                 setModelOpen(false);
               }}
-            >
-              {PROVIDER_TYPES.map((t) => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
+            />
           </div>
 
           {/* Model combobox */}
@@ -374,7 +413,7 @@ export default function SettingsPage() {
                       onChange={(e) => setEditForm({ ...editForm, default_model: e.target.value })}
                     />
                   </div>
-                  {["ollama", "custom"].includes(p.provider_type) && (
+                  {p.provider_type !== "openai" && p.provider_type !== "anthropic" && p.provider_type !== "fake" && (
                     <div>
                       <label className="mb-1 block text-xs font-medium text-ink-500">Base URL</label>
                       <input
@@ -516,7 +555,7 @@ export default function SettingsPage() {
           </div>
           {(webToolForm.tool_type === "tavily" ||
             webToolForm.tool_type === "perplexity" ||
-            webToolForm.tool_type === "custom_httpx") && (
+            webToolForm.tool_type === "web_agent") && (
             <div>
               <label className="mb-1 block text-xs font-medium text-ink-500">API Key</label>
               <input
@@ -530,18 +569,127 @@ export default function SettingsPage() {
               />
             </div>
           )}
-          {webToolForm.tool_type === "custom_httpx" && (
-            <div>
-              <label className="mb-1 block text-xs font-medium text-ink-500">Base URL</label>
-              <input
-                className="input"
-                value={webToolForm.base_url ?? ""}
-                onChange={(e) =>
-                  setWebToolForm({ ...webToolForm, base_url: e.target.value })
-                }
-                placeholder="https://api.example.com/search"
-              />
-            </div>
+          {webToolForm.tool_type === "web_agent" && (
+            <>
+              <div>
+                <label className="mb-1 block text-xs font-medium text-ink-500">Base URL</label>
+                <input
+                  className="input"
+                  value={webToolForm.base_url ?? ""}
+                  onChange={(e) =>
+                    setWebToolForm({ ...webToolForm, base_url: e.target.value })
+                  }
+                  placeholder="https://api.example.com/search"
+                />
+              </div>
+              <div className="col-span-full mt-2 rounded-lg border border-dashed border-emerald-300/60 bg-emerald-50/30 p-4 dark:border-emerald-700/40 dark:bg-emerald-950/10">
+                <p className="mb-3 flex items-center gap-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+                  <Settings2 size={14} />
+                  Web Agent settings
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div>
+                    <label className="mb-1 block text-[11px] font-medium text-ink-500">
+                      Max iterations
+                    </label>
+                    <input
+                      type="number"
+                      className="input"
+                      min={1}
+                      max={10}
+                      value={webAgentMaxIterations}
+                      onChange={(e) =>
+                        setWebAgentMaxIterations(Math.max(1, Math.min(10, Number(e.target.value) || 3)))
+                      }
+                    />
+                    <p className="mt-0.5 text-[10px] text-ink-400">
+                      How many planner→fetch→evaluate loops (1-10)
+                    </p>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-medium text-ink-500">
+                      LLM Provider{" "}
+                      <span className="font-normal text-ink-400">— optional</span>
+                    </label>
+                    <select
+                      className="input"
+                      value={webAgentProviderId ?? ""}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setWebAgentProviderId(v ? Number(v) : null);
+                      }}
+                    >
+                      <option value="">Use project default</option>
+                      {providers.filter((p) => p.is_active).map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} ({p.provider_type})
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-0.5 text-[10px] text-ink-400">
+                      Dedicated LLM for the agent; falls back to project default
+                    </p>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-medium text-ink-500">
+                      Model override{" "}
+                      <span className="font-normal text-ink-400">— optional</span>
+                    </label>
+                    <input
+                      className="input"
+                      value={webAgentModel}
+                      onChange={(e) => setWebAgentModel(e.target.value)}
+                      placeholder="e.g. gpt-4o-mini"
+                    />
+                    <p className="mt-0.5 text-[10px] text-ink-400">
+                      Override the provider's default model for the agent
+                    </p>
+                  </div>
+                </div>
+                {/* Search engine sources */}
+                {webTools.filter((t) => t.tool_type !== "web_agent" && t.is_active).length > 0 && (
+                  <div className="mt-3">
+                    <label className="mb-1.5 block text-[11px] font-medium text-ink-500">
+                      Search engine sources{" "}
+                      <span className="font-normal text-ink-400">— optional, select one or more</span>
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {webTools.filter((t) => t.tool_type !== "web_agent" && t.is_active).map((t) => {
+                        const selected = webAgentSearchToolIds.has(t.id);
+                        return (
+                          <button
+                            key={t.id}
+                            type="button"
+                            onClick={() => {
+                              const next = new Set(webAgentSearchToolIds);
+                              if (selected) next.delete(t.id);
+                              else next.add(t.id);
+                              setWebAgentSearchToolIds(next);
+                            }}
+                            className={cn(
+                              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-all",
+                              selected
+                                ? "border-emerald-400 bg-emerald-100 text-emerald-700 dark:border-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-300"
+                                : "border-ink-200 bg-white text-ink-500 hover:border-ink-300 dark:border-ink-700 dark:bg-ink-900 dark:hover:border-ink-600",
+                            )}
+                          >
+                            {selected && (
+                              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
+                                <path d="M2 5L4 7L8 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                              </svg>
+                            )}
+                            {t.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <p className="mt-1 text-[10px] text-ink-400">
+                      Selected engines are queried first to seed URLs before the LLM planner runs
+                    </p>
+                  </div>
+                )}
+              </div>
+            </>
           )}
         </div>
 
@@ -572,6 +720,9 @@ export default function SettingsPage() {
                 {t.base_url && ` · ${t.base_url}`}
                 {t.has_api_key && <span className="ml-1">· 🔑</span>}
               </p>
+              {t.tool_type === "web_agent" && t.params && (
+                <WebAgentParamsLine params={t.params} />
+              )}
             </div>
             <div className="flex items-center gap-2">
               <span className="text-ink-400">
@@ -593,6 +744,126 @@ export default function SettingsPage() {
         )}
       </div>
     </div>
+  );
+}
+
+function ProviderTypeSelect({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (t: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
+  const Icon = PROVIDER_ICONS[value] ?? Cpu;
+  const iconBg = PROVIDER_COLORS[value] ?? "";
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        className="input flex w-full items-center gap-2 pr-8 text-left"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span
+          className={cn(
+            "flex h-5 w-5 shrink-0 items-center justify-center rounded",
+            iconBg,
+          )}
+        >
+          <Icon size={13} />
+        </span>
+        <span className="capitalize">{value}</span>
+        <ChevronDown
+          size={15}
+          className={cn(
+            "absolute right-2 top-1/2 -translate-y-1/2 text-ink-400 transition-transform",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+
+      {open && (
+        <div className="absolute z-20 mt-1 w-full rounded-xl border border-ink-200 bg-white py-1 shadow-lg dark:border-ink-700 dark:bg-ink-900">
+          {PROVIDER_TYPES.map((t) => {
+            const TIcon = PROVIDER_ICONS[t] ?? Cpu;
+            const tBg = PROVIDER_COLORS[t] ?? "";
+            return (
+              <button
+                key={t}
+                type="button"
+                className={cn(
+                  "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-ink-50 dark:hover:bg-ink-800",
+                  t === value && "bg-ink-50 dark:bg-ink-800/60",
+                )}
+                onClick={() => {
+                  onChange(t);
+                  setOpen(false);
+                }}
+              >
+                <span
+                  className={cn(
+                    "flex h-5 w-5 shrink-0 items-center justify-center rounded",
+                    tBg,
+                  )}
+                >
+                  <TIcon size={13} />
+                </span>
+                <span className="capitalize">{t}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WebAgentParamsLine({ params }: { params: Record<string, unknown> }) {
+  const maxIter = params.max_iterations as number | undefined;
+  const llmCfg = params.llm_config as
+    | { provider?: string; model?: string; base_url?: string }
+    | undefined;
+  const searchTools = params.search_tools as
+    | { tool_type: string }[]
+    | undefined;
+
+  const parts: string[] = [];
+  if (maxIter != null) parts.push(`${maxIter} iter`);
+  if (llmCfg) {
+    const bits: string[] = [];
+    if (llmCfg.provider) bits.push(llmCfg.provider);
+    if (llmCfg.model) bits.push(llmCfg.model);
+    if (bits.length) parts.push(bits.join(" · "));
+  }
+  if (searchTools?.length) {
+    parts.push(searchTools.map((s) => s.tool_type).join(", "));
+  }
+
+  if (parts.length === 0) return null;
+  return (
+    <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-emerald-600 dark:text-emerald-400">
+      <Settings2 size={10} className="shrink-0" />
+      {parts.map((p, i) => (
+        <span
+          key={i}
+          className="rounded-full bg-emerald-100 px-1.5 py-px dark:bg-emerald-900/30"
+        >
+          {p}
+        </span>
+      ))}
+    </p>
   );
 }
 

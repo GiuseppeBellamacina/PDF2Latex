@@ -1,6 +1,19 @@
-"""FastAPI application entry point."""
+"""FastAPI application entry point.
+
+Run from the *backend* directory (one level above this file):
+    cd backend
+    uv run uvicorn app.main:app --reload  # development with hot-reload
+    uv run python -m app.main             # shortcut (spawns uvicorn internally)
+"""
 
 from __future__ import annotations
+
+import os
+
+# Suppress transitive-dependency nags that fire at import time.
+# Albumentations 1.x → 2.x upgrade nag: we pin <2.0 because nougat-ocr still
+# passes the deprecated `alpha_affine` kwarg (removed in 2.x).
+os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
 
 from contextlib import asynccontextmanager
 

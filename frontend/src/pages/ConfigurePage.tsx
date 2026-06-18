@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api, type Figure, type LatexTemplate, type Project, type Source } from "../lib/api";
+import { api, type Figure, type LatexTemplate, type Project, type Source, type WebTool } from "../lib/api";
 import InformationPanel from "../components/configure/InformationPanel";
 import StructurePanel from "../components/configure/StructurePanel";
 import PipelinePanel from "../components/configure/PipelinePanel";
@@ -63,6 +63,10 @@ export default function ConfigurePage() {
   const [mandatoryIds, setMandatoryIds] = useState<Set<number>>(new Set());
   const [showSummary, setShowSummary] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [researchMode, setResearchMode] = useState(false);
+  const [webToolIds, setWebToolIds] = useState<number[]>([]);
+  const [webTools, setWebTools] = useState<WebTool[]>([]);
+  const [researchMaxQueriesStr, setResearchMaxQueriesStr] = useState("");
 
   useEffect(() => {
     api.getProject(id).then((p) => {
@@ -79,6 +83,9 @@ export default function ConfigurePage() {
       setOcrLang(p.ocr_lang ?? "");
       setLatexTemplate(p.latex_template ?? "default");
       setWriterUseKnowledge(p.writer_use_knowledge ?? false);
+      setResearchMode(p.research_mode ?? false);
+      setWebToolIds(p.web_tool_ids ?? []);
+      setResearchMaxQueriesStr(p.research_max_queries?.toString() ?? "");
       if (p.user_sources?.length) {
         setUserSourcesRaw(
           p.user_sources.map((s) =>
@@ -95,6 +102,7 @@ export default function ConfigurePage() {
       .finally(() => setLoading(false));
 
     api.listTemplates().then(setAvailableTemplates).catch(() => {});
+    api.listWebTools().then(setWebTools).catch(() => setWebTools([]));
   }, [id, refreshKey]);
 
   const figuresBySource = useMemo(() => {
@@ -140,6 +148,12 @@ export default function ConfigurePage() {
         structure_hint: structureHint,
         pipeline_config: pipelineConfig,
         latex_template: latexTemplate || null,
+        research_mode: researchMode,
+        web_tool_ids: webToolIds.length > 0 ? webToolIds : null,
+        research_max_queries: (() => {
+          const v = parseInt(researchMaxQueriesStr, 10);
+          return v > 0 ? v : null;
+        })(),
         source_order: orderedSources.map((s) => s.id),
         mandatory_figure_ids: [...mandatoryIds],
       });
@@ -214,6 +228,13 @@ export default function ConfigurePage() {
                 subtitle={subtitle} setSubtitle={setSubtitle}
                 coverDate={coverDate} setCoverDate={setCoverDate}
                 abstract={abstract} setAbstract={setAbstract}
+                researchMode={researchMode}
+                setResearchMode={setResearchMode}
+                webToolIds={webToolIds}
+                setWebToolIds={setWebToolIds}
+                webTools={webTools}
+                researchMaxQueriesStr={researchMaxQueriesStr}
+                setResearchMaxQueriesStr={setResearchMaxQueriesStr}
               />
             )}
             {activeSection === "structure" && (
@@ -300,6 +321,17 @@ export default function ConfigurePage() {
                 </div>
               </div>
               <div><span className="text-xs font-medium uppercase text-ink-400">Figures</span><p className="mt-0.5 text-sm">{mandatoryIds.size} / {totalFigures}</p></div>
+              {researchMode && (
+                <div>
+                  <span className="text-xs font-medium uppercase text-ink-400">Web Research</span>
+                  <p className="mt-0.5 text-sm">
+                    Enabled
+                    {webToolIds.length > 0 && <> · {webToolIds.length} tool{webToolIds.length !== 1 ? "s" : ""}</>}
+                    {researchMaxQueriesStr && <> · max {parseInt(researchMaxQueriesStr, 10)} queries</>}
+                    {!researchMaxQueriesStr && <> · unlimited queries</>}
+                  </p>
+                </div>
+              )}
               {parsedUserSources.length > 0 && (
                 <div>
                   <span className="text-xs font-medium uppercase text-ink-400">Bibliography ({parsedUserSources.length})</span>

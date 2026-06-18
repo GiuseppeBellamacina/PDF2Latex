@@ -26,6 +26,7 @@ export interface Source {
   filename: string;
   n_pages: number;
   order_index: number;
+  source_type: string;
 }
 
 export interface Figure {
@@ -72,7 +73,8 @@ export interface Project {
   latex_template: string | null;
   writer_use_knowledge: boolean | null;
   research_mode: boolean | null;
-  web_tool_id: number | null;
+  web_tool_ids: number[] | null;
+  research_max_queries: number | null;
   user_sources: { authors: string; title: string; year: string; venue: string }[] | null;
   pipeline_config: Record<string, string> | null;
   output_tex_path: string | null;
@@ -103,7 +105,8 @@ export interface ProjectUpdate {
   latex_template?: string | null;
   writer_use_knowledge?: boolean;
   research_mode?: boolean;
-  web_tool_id?: number | null;
+  web_tool_ids?: number[] | null;
+  research_max_queries?: number | null;
   user_sources?: { authors: string; title: string; year: string; venue: string }[] | null;
   pipeline_config?: Record<string, string>;
   source_order?: number[];

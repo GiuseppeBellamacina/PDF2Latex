@@ -88,6 +88,7 @@ class SourceOut(BaseModel):
     filename: str
     n_pages: int
     order_index: int
+    source_type: str = "pdf"
 
     class Config:
         from_attributes = True
@@ -184,7 +185,8 @@ class ProjectUpdate(BaseModel):
     writer_use_knowledge: bool | None = None
     # Research-based generation mode (no PDFs needed).
     research_mode: bool | None = None
-    web_tool_id: int | None = None
+    web_tool_ids: list[int] | None = None
+    research_max_queries: int | None = None
     # User-provided bibliographic sources (JSON array of structured refs).
     user_sources: list[dict[str, str]] | None = None
     # LaTeX document template
@@ -219,7 +221,8 @@ class ProjectOut(BaseModel):
     latex_template: str | None = None
     writer_use_knowledge: bool | None = None
     research_mode: bool | None = None
-    web_tool_id: int | None = None
+    web_tool_ids: list[int] | None = None
+    research_max_queries: int | None = None
     user_sources: list[dict[str, str]] | None = None
     pipeline_config: dict[str, str] | None = None
     output_tex_path: str | None

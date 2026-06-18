@@ -113,10 +113,14 @@ class Project(Base):
 
     # ── Research-based generation (no PDFs needed) ───────────────────────
     # When True, the pipeline researches the topic online before writing,
-    # using the web tool configured in ``web_tool_id``. Works alongside
+    # using the web tools configured in ``web_tool_ids``. Works alongside
     # uploaded PDFs (research supplements the extracted content).
     research_mode = Column(Boolean, default=False)
-    web_tool_id = Column(Integer, ForeignKey("web_tools.id"), nullable=True)
+    # List of WebToolConfig IDs to use for web research. Multiple tools
+    # are searched in parallel and results are merged &amp; deduplicated.
+    web_tool_ids = Column(JSON, nullable=True)
+    # Max web search queries for research mode. NULL = unlimited (free tools).
+    research_max_queries = Column(Integer, nullable=True)
 
     output_tex_path = Column(String(512), nullable=True)
     output_pdf_path = Column(String(512), nullable=True)
@@ -141,7 +145,7 @@ class Project(Base):
 
 
 class Source(Base):
-    """An uploaded PDF belonging to a project."""
+    """An uploaded source belonging to a project — PDF, text file, image, or URL."""
 
     __tablename__ = "sources"
 
@@ -151,6 +155,9 @@ class Source(Base):
     path = Column(String(512), nullable=False)
     n_pages = Column(Integer, default=0)
     order_index = Column(Integer, default=0)
+    source_type = Column(
+        String(50), nullable=False, default="pdf"
+    )  # pdf|text|image|url
 
     project = relationship("Project", back_populates="sources")
 
@@ -179,6 +186,10 @@ class Figure(Base):
     target_section_title = Column(String(512), nullable=True)
     # Override caption specified by the user (takes priority over OCR caption).
     custom_caption = Column(Text, nullable=True)
+    # Text surrounding the figure on its source page. Stored at upload time so
+    # the LLM-based figure scoring (vlm) can read the original context and judge
+    # whether the figure is worth including.
+    context_text = Column(Text, nullable=True)
 
     project = relationship("Project", back_populates="figures")
 
@@ -223,7 +234,7 @@ class ProviderConfig(Base):
     name = Column(String(100), nullable=False, unique=True)
     provider_type = Column(
         String(50), nullable=False
-    )  # openai|anthropic|ollama|custom|fake
+    )  # openai|anthropic|ollama|custom|fake|deepseek|nvidia|openrouter|grok|alibaba|together|groq|mistral
     api_key_encrypted = Column(Text, nullable=True)
     base_url = Column(String(512), nullable=True)
     default_model = Column(String(100), nullable=True)
@@ -244,7 +255,7 @@ class WebToolConfig(Base):
     name = Column(String(100), nullable=False, unique=True)
     tool_type = Column(
         String(50), nullable=False
-    )  # tavily|perplexity|wikipedia|custom_httpx
+    )  # tavily|perplexity|wikipedia|web_agent
     api_key_encrypted = Column(Text, nullable=True)
     base_url = Column(String(512), nullable=True)
     params = Column(JSON, nullable=True)  # max_results, search_depth, language, etc.

@@ -4,6 +4,7 @@ import json
 import os
 
 import pytest
+import pytest_asyncio
 
 from app.agents.state import PlannedSection
 
@@ -22,6 +23,14 @@ def pytest_addoption(parser):
 
 
 # ── Real-LLM config fixture ───────────────────────────────────────────────
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _migrate_test_db():
+    """Ensure the test database is fully migrated before any test runs."""
+    from app.db.database import init_db
+
+    await init_db()
 
 
 @pytest.fixture
@@ -53,6 +62,22 @@ def real_llm_config() -> dict:
 def use_real_llm(request) -> bool:
     """True when ``--real-llm`` was passed on the command line."""
     return bool(request.config.getoption("--real-llm", default=False))
+
+
+@pytest.fixture
+def wikipedia_adapter():
+    """Real Wikipedia adapter for E2E tests, language from env var.
+
+    Set ``PDF2TEX_TEST_WIKI_LANG`` to override the default ("en").
+    """
+    from app.services.web_search import get_search_adapter
+
+    lang = os.environ.get("PDF2TEX_TEST_WIKI_LANG", "en")
+    config: dict[str, object] = {
+        "tool_type": "wikipedia",
+        "language": lang,
+    }
+    return get_search_adapter(config)
 
 
 # ── Plan helpers ──────────────────────────────────────────────────────────

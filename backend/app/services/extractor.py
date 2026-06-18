@@ -112,6 +112,49 @@ def _caption_quality(text: str) -> float:
     return round(max(0.0, min(score, 1.0)), 3)
 
 
+def _get_figure_surrounding_text(
+    page,
+    rect,
+    max_distance: float = 300.0,  # noqa: ANN001
+) -> str:
+    """Collect text blocks near a figure's bounding box on a PDF page.
+
+    Returns up to ~1200 characters of the closest text blocks, ordered by
+    proximity, so an LLM can understand what the figure is about.
+    """
+    try:
+        blocks = page.get_text("blocks")
+    except Exception:
+        return ""
+    ix0, iy0, ix1, iy1 = rect.x0, rect.y0, rect.x1, rect.y1
+    fig_center_x = (ix0 + ix1) / 2.0
+    fig_center_y = (iy0 + iy1) / 2.0
+
+    scored: list[tuple[float, str]] = []
+    for b in blocks:
+        if len(b) < 5:
+            continue
+        bx0, by0, bx1, by1, raw = b[0], b[1], b[2], b[3], b[4]
+        text = re.sub(r"\s+", " ", str(raw)).strip()
+        if len(text) < 10 or len(text) > 600:
+            continue
+        # Distance: centre of block to centre of figure.
+        block_cx = (bx0 + bx1) / 2.0
+        block_cy = (by0 + by1) / 2.0
+        dist = ((block_cx - fig_center_x) ** 2 + (block_cy - fig_center_y) ** 2) ** 0.5
+        if dist <= max_distance:
+            scored.append((dist, text))
+    scored.sort(key=lambda x: x[0])
+    parts: list[str] = []
+    total = 0
+    for _, text in scored:
+        parts.append(text)
+        total += len(text)
+        if total >= 1200:
+            break
+    return "\n".join(parts)[:1500]
+
+
 def _score_figure(
     width: int,
     height: int,
@@ -461,6 +504,10 @@ class FigureInfo:
     caption: str = ""
     score: float = 0.0
     suggested: bool = False
+    # Text surrounding the figure on its source page (blocks near the bounding
+    # box). Set during extraction so an LLM can later score relevance to the
+    # document by reading both the image and its original context.
+    context_text: str = ""
 
 
 class BaseExtractor:
@@ -669,6 +716,10 @@ class PyMuPDFExtractor(BaseExtractor):
                     caption_confidence=caption_conf,
                     page_context=ctx,
                 )
+                # Capture the surrounding text for later LLM scoring.
+                context_text = (
+                    _get_figure_surrounding_text(page, rect) if rect is not None else ""
+                )
                 out.append(
                     FigureInfo(
                         rel_path=f"figures/{fig_path.name}",
@@ -676,6 +727,7 @@ class PyMuPDFExtractor(BaseExtractor):
                         caption=caption,
                         score=score,
                         suggested=suggested,
+                        context_text=context_text,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 - skip un-extractable images

@@ -35,13 +35,21 @@ structure-marker = ["marker-pdf>=1.0"]
 structure-mineru = ["magic-pdf>=1.0"]
 # OCR (scanned pages) ------------------------------------------------------
 ocr-tesseract = ["pytesseract>=0.3.10"]          # + system `tesseract` binary
+# NOTE: rapidocr pulls `opencv-python` which fights with `opencv-python-headless`
+# (from math extras) over the `cv2` module.  Install only if you actually use it.
 ocr-rapidocr = ["rapidocr-onnxruntime>=1.3"]
 ocr-paddle = ["paddleocr>=2.7", "paddlepaddle>=2.6"]
 ocr-surya = ["surya-ocr>=0.6"]
 ocr-dots = ["transformers>=4.44", "torch>=2.2"]
 # Math / equations ---------------------------------------------------------
+# NOTE: both nougat-ocr and pix2tex depend transitively on `albumentations`.
+# Albumentations 2.x removes the `alpha_affine` parameter that nougat still
+# passes to `ElasticTransform`, so we pin <2.0 until upstream updates.
+# opencv-python-headless is pinned <4.11 because albucore 0.0.23 references
+# `cv2.CV_8U` which was removed in opencv 4.11+.
+# Remember to uncomment NO_ALBUMENTATIONS_UPDATE=1 in your .env file.
 math-pix2tex = ["pix2tex>=0.1.2"]
-math-nougat = ["nougat-ocr>=0.1.17"]
+math-nougat = ["nougat-ocr>=0.1.17", "albumentations>=1.4,<2.0", "opencv-python-headless>=4.10,<4.11"]
 
 dev = [
     "ruff>=0.6",
@@ -52,6 +60,10 @@ dev = [
 # Web search / research tool backends — install the ones you use.
 # Wikipedia is built-in (no extra deps).
 research-tavily = ["tavily-python>=0.5"]
+# trafilatura is a high-quality HTML-to-text extractor (boilerplate removal,
+# metadata extraction).  Install it for cleaner text from URL sources:
+#   uv sync --extra web-trafilatura
+web-trafilatura = ["trafilatura>=1.12"]
 # Perplexity stays with direct HTTPX — it follows the OpenAI-compatible pattern
 # and the project already uses httpx everywhere; adding a full OpenAI client
 # just for Perplexity would complicate the adapter pattern unnecessarily.
@@ -77,7 +89,26 @@ ignore = ["E501"]
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
 
+# ── PyTorch CUDA ───────────────────────────────────────────────────────────
+# By default uv resolves torch from PyPI which only ships CPU builds.
+# Point torch/torchvision at the PyTorch CUDA 12.4 wheelhouse so the GPU
+# (NVIDIA GeForce RTX 4070 SUPER, compute 8.9, driver 596.x) is usable.
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+torchaudio = { index = "pytorch-cu124" }
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "fastapi-cli>=0.0.27",
+]

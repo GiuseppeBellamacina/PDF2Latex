@@ -35,7 +35,14 @@ export function useGenerateWs(projectId: string) {
   const wsRef = useRef<WebSocket | null>(null);
 
   const start = useCallback(
-    (providerId: number, model?: string) => {
+    (
+      providerId: number,
+      model?: string,
+      roleProviders?: Record<
+        string,
+        { provider_id: number; model?: string }
+      >,
+    ) => {
       setEvents([]);
       setLatest(null);
       setRunning(true);
@@ -47,7 +54,13 @@ export function useGenerateWs(projectId: string) {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        ws.send(JSON.stringify({ provider_id: providerId, model }));
+        ws.send(
+          JSON.stringify({
+            provider_id: providerId,
+            model,
+            role_providers: roleProviders,
+          }),
+        );
       };
       ws.onmessage = (e) => {
         const data: ProgressEvent = JSON.parse(e.data);

@@ -51,7 +51,10 @@ quei titoli di parti/sezioni e quell'ordine. In assenza di indicazioni, segui l'
 elaborazione dei documenti come riferimento.
 
 Per ogni sezione indica in source_filenames SOLO i documenti realmente pertinenti, così \
-che la scrittura usi il materiale giusto. Rispondi ESCLUSIVAMENTE con un oggetto JSON valido:
+che la scrittura usi il materiale giusto. IMPORTANTE: copia i nomi dei file ESATTAMENTE \
+come compaiono nel campo "filename" delle analisi, carattere per carattere \
+(anche se contengono trattini, underscore o caratteri speciali). Non modificarli, non \
+abbreviarli e non aggiungere spazi. Rispondi ESCLUSIVAMENTE con un oggetto JSON valido:
 {
   "title": "Titolo del documento",
   "sections": [

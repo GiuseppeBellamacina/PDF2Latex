@@ -1,0 +1,47 @@
+import {
+  ArrowLeftRight,
+  Bolt,
+  Brain,
+  Cloud,
+  Cpu,
+  Ghost,
+  Handshake,
+  Monitor,
+  ScanEye,
+  Server,
+  Sparkles,
+  Wind,
+  Wrench,
+} from "lucide-react";
+
+export const PROVIDER_ICONS: Record<string, typeof Cpu> = {
+  openai: Cpu,
+  anthropic: Brain,
+  ollama: Server,
+  custom: Wrench,
+  fake: Ghost,
+  deepseek: ScanEye,
+  nvidia: Monitor,
+  openrouter: ArrowLeftRight,
+  grok: Sparkles,
+  alibaba: Cloud,
+  together: Handshake,
+  groq: Bolt,
+  mistral: Wind,
+};
+
+export const PROVIDER_COLORS: Record<string, string> = {
+  openai: "text-emerald-500 bg-emerald-50 dark:bg-emerald-950/30",
+  anthropic: "text-amber-500 bg-amber-50 dark:bg-amber-950/30",
+  ollama: "text-blue-500 bg-blue-50 dark:bg-blue-950/30",
+  custom: "text-violet-500 bg-violet-50 dark:bg-violet-950/30",
+  fake: "text-ink-400 bg-ink-100 dark:bg-ink-800",
+  deepseek: "text-cyan-500 bg-cyan-50 dark:bg-cyan-950/30",
+  nvidia: "text-green-600 bg-green-50 dark:bg-green-950/30",
+  openrouter: "text-sky-500 bg-sky-50 dark:bg-sky-950/30",
+  grok: "text-slate-600 bg-slate-100 dark:bg-slate-800",
+  alibaba: "text-orange-500 bg-orange-50 dark:bg-orange-950/30",
+  together: "text-rose-500 bg-rose-50 dark:bg-rose-950/30",
+  groq: "text-amber-500 bg-amber-50 dark:bg-amber-950/30",
+  mistral: "text-indigo-500 bg-indigo-50 dark:bg-indigo-950/30",
+};

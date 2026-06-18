@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import uuid
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -277,21 +279,40 @@ async def create_project(
     writer_use_knowledge: bool = Form(False),
     user_sources: str = Form(""),
     research_mode: bool = Form(False),
-    web_tool_id: int = Form(0),
+    web_tool_ids: str = Form(""),
+    research_max_queries: int = Form(0),
+    urls: str = Form(""),
     files: list[UploadFile] = File(...),
     db: AsyncSession = Depends(get_db),
 ):
-    if not files and not research_mode:
-        raise HTTPException(400, "Nessun file caricato e ricerca web non attiva")
+    has_files = any((f.filename or "").strip() for f in files)
+    url_list = [u.strip() for u in urls.split("\n") if u.strip()]
+    if not has_files and not url_list and not research_mode:
+        raise HTTPException(400, "Nessuna fonte caricata e ricerca web non attiva")
 
-    # Validate web_tool_id when research_mode is enabled.
-    if research_mode and web_tool_id > 0:
-        web_tool = await db.get(WebToolConfig, web_tool_id)
-        if web_tool is None:
-            raise HTTPException(404, "Web tool non trovato")
-        if not web_tool.is_active:
-            raise HTTPException(400, "Il web tool selezionato non è attivo")
+    # Parse web_tool_ids from comma-separated string (e.g. "1,2,3").
+    _parsed_tool_ids: list[int] = []
+    if web_tool_ids.strip():
+        for raw in web_tool_ids.split(","):
+            raw = raw.strip()
+            if raw:
+                try:
+                    _parsed_tool_ids.append(int(raw))
+                except ValueError:
+                    raise HTTPException(400, f"ID web tool non valido: {raw}")
 
+    # Validate web_tool_ids when research_mode is enabled.
+    if research_mode and _parsed_tool_ids:
+        for tid in _parsed_tool_ids:
+            web_tool = await db.get(WebToolConfig, tid)
+            if web_tool is None:
+                raise HTTPException(404, f"Web tool {tid} non trovato")
+            if not web_tool.is_active:
+                raise HTTPException(400, f"Il web tool '{web_tool.name}' non è attivo")
+
+    total_source_count = len([f for f in files if (f.filename or "").strip()]) + len(
+        url_list
+    )
     project = Project(
         name=name,
         user_prompt=user_prompt or None,
@@ -309,9 +330,10 @@ async def create_project(
         if user_sources.strip()
         else None,
         research_mode=bool(research_mode),
-        web_tool_id=web_tool_id if web_tool_id > 0 else None,
+        web_tool_ids=_parsed_tool_ids if _parsed_tool_ids else None,
+        research_max_queries=research_max_queries if research_max_queries > 0 else None,
         status=ProjectStatus.uploaded,
-        total_sources=len(files),
+        total_sources=total_source_count,
     )
     db.add(project)
     await db.commit()
@@ -321,49 +343,102 @@ async def create_project(
     figures_dir = dest_dir / "figures"
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Phase 1: write all files to disk ──────────────────────────────────
+    # ── Helper: classify a filename by extension ────────────────────────
+    def _classify(fname: str) -> str:
+        ext = Path(fname).suffix.lower()
+        if ext in (".pdf",):
+            return "pdf"
+        if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"):
+            return "image"
+        # Everything else (txt, md, json, csv, py, js, etc.) is text.
+        return "text"
+
+    # ── Phase 1: write all files to disk, collect metadata ──────────────
     file_infos: list[dict] = []
-    for idx, upload in enumerate(files):
-        if not (upload.filename or "").lower().endswith(".pdf"):
+    src_idx = 0  # global order index across files + urls
+    for upload in files:
+        fname = (upload.filename or "").strip()
+        if not fname:
             continue
-        safe_name = Path(upload.filename).name
+        safe_name = Path(fname).name
         target = dest_dir / safe_name
         content = await upload.read()
         target.write_bytes(content)
-        file_infos.append({"idx": idx, "filename": safe_name, "target": target})
+        stype = _classify(fname)
+        file_infos.append(
+            {
+                "idx": src_idx,
+                "filename": safe_name,
+                "target": target,
+                "source_type": stype,
+            }
+        )
+        src_idx += 1
 
-    if not file_infos:
-        raise HTTPException(400, "Nessun file PDF valido caricato")
+    # Add URLs as source entries — use a short, readable filename derived from
+    # the domain + path stem so the planner LLM reliably copies it into
+    # source_filenames (a full https://... URL would often be mangled).
+    url_infos: list[dict] = []
+    for url in url_list:
+        try:
+            parsed = urlparse(url)
+            if not parsed.netloc:
+                url_slug = f"web_{hashlib.md5(url.encode()).hexdigest()[:8]}"
+            else:
+                domain = parsed.netloc.replace(".", "_")
+                path_stem = parsed.path.rstrip("/").split("/")[-1] or "page"
+                url_slug = f"{domain}_{path_stem}"[:64]
+        except Exception:
+            url_slug = f"web_{hashlib.md5(url.encode()).hexdigest()[:8]}"
+        url_infos.append(
+            {
+                "idx": src_idx,
+                "filename": url_slug,
+                "target": url,
+                "source_type": "url",
+            }
+        )
+        src_idx += 1
 
-    # ── Phase 2: parallel page count + source creation ────────────────────
+    if not file_infos and not url_infos and not research_mode:
+        raise HTTPException(400, "Nessuna fonte valida caricata")
+
+    # ── Phase 2: create Source records ──────────────────────────────────
     async def _create_source(info: dict) -> Source:
-        n_pages = await run_in_threadpool(pdf_page_count, info["target"])
+        n_pages = 0
+        if info["source_type"] == "pdf" and isinstance(info["target"], Path):
+            n_pages = await run_in_threadpool(pdf_page_count, info["target"])
         return Source(
             project_id=project.id,
             filename=info["filename"],
             path=str(info["target"]),
             order_index=info["idx"],
             n_pages=n_pages,
+            source_type=info["source_type"],
         )
 
-    sources = await asyncio.gather(*[_create_source(info) for info in file_infos])
+    all_infos = file_infos + url_infos
+    sources = await asyncio.gather(*[_create_source(info) for info in all_infos])
     for source in sources:
         db.add(source)
-    await db.flush()  # assign source.id for all sources at once
+    await db.flush()
 
-    # ── Phase 3: parallel figure extraction ───────────────────────────────
+    # ── Phase 3: extract figures only from PDFs ────────────────────────
+    pdf_infos = [i for i in file_infos if i["source_type"] == "pdf"]
+    pdf_sources = [s for s, i in zip(sources, file_infos) if i["source_type"] == "pdf"]
+
     async def _extract_one(source: Source, info: dict) -> tuple[Source, list]:
         try:
             figs = await run_in_threadpool(extract_figures, info["target"], figures_dir)
-        except Exception:  # noqa: BLE001 - figure extraction is best-effort
+        except Exception:
             figs = []
         return source, figs
 
     all_fig_pairs = await asyncio.gather(
-        *[_extract_one(sources[i], file_infos[i]) for i in range(len(sources))]
+        *[_extract_one(pdf_sources[i], pdf_infos[i]) for i in range(len(pdf_sources))]
     )
 
-    # ── Phase 4: create Figure records ────────────────────────────────────
+    # ── Phase 4: create Figure records ─────────────────────────────────
     fig_order = 0
     for source, figs in all_fig_pairs:
         for fig in figs:
@@ -379,6 +454,7 @@ async def create_project(
                     score=fig.score,
                     suggested=fig.suggested,
                     mandatory=fig.suggested,
+                    context_text=fig.context_text or None,
                 )
             )
             fig_order += 1
@@ -418,6 +494,19 @@ async def update_project(
 
     for field, value in data.items():
         setattr(project, field, value)
+
+    # Validate web_tool_ids only when research_mode or web_tool_ids were
+    # explicitly changed in this request (not on unrelated PATCH calls).
+    if "research_mode" in data or "web_tool_ids" in data:
+        if project.research_mode and project.web_tool_ids:
+            for tid in project.web_tool_ids:
+                web_tool = await db.get(WebToolConfig, tid)
+                if web_tool is None:
+                    raise HTTPException(404, f"Web tool {tid} non trovato")
+                if not web_tool.is_active:
+                    raise HTTPException(
+                        400, f"Il web tool '{web_tool.name}' non è attivo"
+                    )
 
     if source_order:
         rows = (

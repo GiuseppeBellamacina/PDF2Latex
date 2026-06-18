@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { type ProgressEvent } from "../hooks/useGenerateWs";
 import { cn } from "../lib/utils";
-import { deriveState } from "./PipelineGraph";
+import { COLORS, deriveState } from "./PipelineGraph.utils";
 
 const STAGES = [
   { key: "extracting", label: "Extraction", icon: ScanText },
@@ -58,10 +58,10 @@ export default function ProgressTimeline({ events, latest, onNodeClick }: Props)
 
   function nodeColor(state: string): string {
     switch (state) {
-      case "completed": return "#059669";
-      case "active": return "#10B981";
-      case "error": return "#EF4444";
-      default: return "#D1D5DB";
+      case "completed": return COLORS.edgeCompleted.from;
+      case "active": return COLORS.node.active.stroke;
+      case "error": return COLORS.level.error;
+      default: return COLORS.node.pending.stroke;
     }
   }
 
