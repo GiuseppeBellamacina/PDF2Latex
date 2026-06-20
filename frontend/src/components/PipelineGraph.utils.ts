@@ -30,46 +30,100 @@ export interface NodeDetail {
   status: string;
   lines: string[];
   level?: "info" | "success" | "warning" | "error";
+  /** Extra structured data for rich tooltip rendering */
+  researchSources?: { title: string; url: string; source: string }[];
+  analyzeDocuments?: string[];
+  chapterDetails?: { name: string; done: number; total: number }[];
+  errorDetail?: string;
+}
+
+export interface PhaseInfo {
+  currentPhase: string;
+  currentIcon: string;
+  progress: number; // 0–100
+  phaseIndex: number; // 0-based step number
+  totalPhases: number;
+  activeNodeIds: string[];
+  completedCount: number;
+  totalCount: number;
 }
 
 /* ── Layout constants ──────────────────────────────────────────────────── */
 
-export const NODE_W = 170;
-export const NODE_H = 60;
-export const CHAPTER_W = 150;
-export const CHAPTER_H = 42;
-export const COL_GAP = 64;
-export const START_X = 28;
-export const CENTER_Y = 200;
-export const ROW_SPREAD = 108;
+export const NODE_W = 210;
+export const NODE_H = 74;
+export const CHAPTER_W = 180;
+export const CHAPTER_H = 50;
+export const COL_GAP = 80;
+export const START_X = 32;
+export const CENTER_Y = 240;
+export const ROW_SPREAD = 130;
+
+/* ── Derived layout helpers ────────────────────────────────────────────── */
+
+/** Total phases for progress calculation (main nodes only) */
+export const PHASE_ORDER = [
+  "extract",
+  "research",
+  "analyze",
+  "merge_analyses",
+  "plan",
+  "write",
+  "overview",
+  "coherence",
+  "citations",
+  "merge",
+  "review",
+  "judge",
+];
+
+/** Human-readable phase step labels */
+export const PHASE_LABELS: Record<string, string> = {
+  extract: "Extraction",
+  research: "Web Research",
+  analyze: "Document Analysis",
+  merge_analyses: "Source Merge",
+  plan: "Outline Planning",
+  write: "Chapter Writing",
+  overview: "Overview",
+  coherence: "Coherence",
+  citations: "Citations",
+  merge: "Final Merge",
+  review: "LaTeX Review",
+  judge: "Quality Judge",
+};
 
 /* ── SVG colours ───────────────────────────────────────────────────────── */
 
+/**
+ * Colors as CSS custom property references.
+ * These resolve to the correct light/dark value via index.css :root / .dark vars.
+ */
 export const COLORS = {
   node: {
-    error:   { fill: "#FEF2F2", stroke: "#EF4444", text: "#991B1B", sub: "#DC2626" },
-    active:  { fill: "#ECFDF5", stroke: "#10B981", text: "#065F46", sub: "#059669" },
-    done:    { fill: "#F0FDF4", stroke: "#34D399", text: "#065F46", sub: "#10B981" },
-    pending: { fill: "#F9FAFB", stroke: "#D1D5DB", text: "#6B7280", sub: "#9CA3AF" },
+    error:   { fill: "var(--pg-node-error-fill)", stroke: "var(--pg-node-error-stroke)", text: "var(--pg-node-error-text)", sub: "var(--pg-node-error-sub)" },
+    active:  { fill: "var(--pg-node-active-fill)", stroke: "var(--pg-node-active-stroke)", text: "var(--pg-node-active-text)", sub: "var(--pg-node-active-sub)" },
+    done:    { fill: "var(--pg-node-done-fill)", stroke: "var(--pg-node-done-stroke)", text: "var(--pg-node-done-text)", sub: "var(--pg-node-done-sub)" },
+    pending: { fill: "var(--pg-node-pending-fill)", stroke: "var(--pg-node-pending-stroke)", text: "var(--pg-node-pending-text)", sub: "var(--pg-node-pending-sub)" },
   },
-  edgeActive:    { from: "#10B981", to: "#34D399" },
-  edgeCompleted: { from: "#059669", to: "#10B981" },
-  loopback: "#F59E0B",
+  edgeActive:    { from: "var(--pg-edge-active-from)", to: "var(--pg-edge-active-to)" },
+  edgeCompleted: { from: "var(--pg-edge-completed-from)", to: "var(--pg-edge-completed-to)" },
+  loopback: "var(--pg-loopback)",
   level: {
     error:   "#EF4444",
     warning: "#F59E0B",
     success: "#10B981",
     info:    "#6B7280",
   },
-  glow: "#10B981",
-  shadow: "#00000022",
+  glow: "var(--pg-glow)",
+  shadow: "var(--pg-shadow)",
   chapter: {
-    done:      { fill: "#F0FDF4", stroke: "#34D399", text: "#065F46" },
-    active:    { fill: "#ECFDF5", stroke: "#10B981", text: "#065F46" },
-    pending:   { fill: "#F9FAFB", stroke: "#D1D5DB", text: "#6B7280" },
-    progressBg: "#E5E7EB",
-    connectorDone:    "#34D399",
-    connectorPending: "#D1D5DB",
+    done:      { fill: "var(--pg-ch-done-fill)", stroke: "var(--pg-ch-done-stroke)", text: "var(--pg-ch-done-text)" },
+    active:    { fill: "var(--pg-ch-active-fill)", stroke: "var(--pg-ch-active-stroke)", text: "var(--pg-ch-active-text)" },
+    pending:   { fill: "var(--pg-ch-pending-fill)", stroke: "var(--pg-ch-pending-stroke)", text: "var(--pg-ch-pending-text)" },
+    progressBg: "var(--pg-ch-progress-bg)",
+    connectorDone:    "var(--pg-ch-connector-done)",
+    connectorPending: "var(--pg-ch-connector-pending)",
   },
 } as const;
 
@@ -146,20 +200,7 @@ export function deriveState(events: ProgressEvent[]): GraphState {
   let errorNode: string | null = null;
   let judgeRevising = false;
 
-  const order = [
-    "extract",
-    "research",
-    "analyze",
-    "merge_analyses",
-    "plan",
-    "write",
-    "overview",
-    "coherence",
-    "citations",
-    "merge",
-    "review",
-    "judge",
-  ];
+  const order = PHASE_ORDER;
   let highestCompleted = -1;
 
   for (const e of events) {
@@ -279,19 +320,25 @@ export function deriveNodeDetails(
   const labels: Record<string, string> = {
     extract: "Extraction",
     research: "Web Research",
-    analyze: "Analysis",
+    analyze: "Document Analysis",
     merge_analyses: "Source Merge",
-    plan: "Planning",
-    write: "Writing",
+    plan: "Outline Planning",
+    write: "Chapter Writing",
     overview: "Overview",
-    coherence: "Coherence",
-    citations: "Citations",
-    merge: "Merge",
-    review: "Review",
-    judge: "Judge",
+    coherence: "Coherence Check",
+    citations: "Citation Review",
+    merge: "Final Merge",
+    review: "LaTeX Review",
+    judge: "Quality Judge",
   };
   const lines: string[] = [];
   let level: "info" | "success" | "warning" | "error" = "info";
+
+  // Extra structured data for rich rendering
+  let researchSources: { title: string; url: string; source: string }[] | undefined;
+  let analyzeDocuments: string[] | undefined;
+  let chapterDetails: { name: string; done: number; total: number }[] | undefined;
+  let errorDetail: string | undefined;
 
   const nodeEvents = events.filter((e) => e.node === nodeId);
 
@@ -305,9 +352,9 @@ export function deriveNodeDetails(
       lines.push(
         `${filenames.length} document${filenames.length !== 1 ? "s" : ""}`,
       );
-      for (const f of filenames.slice(0, 5)) lines.push(`  ▸ ${f}`);
-      if (filenames.length > 5)
-        lines.push(`  … +${filenames.length - 5} more`);
+      for (const f of filenames.slice(0, 6)) lines.push(`  ▸ ${f}`);
+      if (filenames.length > 6)
+        lines.push(`  … +${filenames.length - 6} more`);
     }
     const errors = nodeEvents.filter((e) => e.level === "error");
     if (errors.length) {
@@ -317,26 +364,90 @@ export function deriveNodeDetails(
       level = "warning";
     }
   } else if (nodeId === "research") {
-    const tool = nodeEvents.find((e) => e.detail?.startsWith("tool:"))?.detail;
-    if (tool) lines.push(`Using: ${tool.replace("tool: ", "")}`);
+    // Collect research_results from events carrying that field
+    const allSources: { title: string; url: string; source: string }[] = [];
+    const adapters: string[] = [];
+    let iterationCount = 0;
+
+    for (const e of nodeEvents) {
+      if (e.research_results?.length) {
+        allSources.push(...e.research_results);
+      }
+      if (e.detail?.startsWith("tool:")) {
+        const tool = e.detail.replace("tool:", "").trim();
+        if (!adapters.includes(tool)) adapters.push(tool);
+      }
+      if (e.detail?.startsWith("iteration:") || e.message?.startsWith("Iteration")) {
+        iterationCount++;
+      }
+    }
+
+    if (allSources.length > 0) {
+      researchSources = allSources;
+      lines.push(`${allSources.length} source${allSources.length !== 1 ? "s" : ""} found`);
+      for (const src of allSources.slice(0, 5)) {
+        const label = src.title.length > 55 ? src.title.slice(0, 54) + "…" : src.title;
+        lines.push(`  ▸ ${label}`);
+      }
+      if (allSources.length > 5) {
+        lines.push(`  … +${allSources.length - 5} more`);
+      }
+    }
+
+    if (iterationCount > 0) {
+      lines.push(`  ${iterationCount} web iteration${iterationCount !== 1 ? "s" : ""}`);
+    }
+
+    if (adapters.length > 0) {
+      lines.push(`  Adapters: ${adapters.join(", ")}`);
+    }
+
     const finish = nodeEvents.find((e) => e.level === "success");
-    if (finish?.message) lines.push(finish.message);
-    if (finish?.detail) lines.push(finish.detail);
+    if (finish?.message && !allSources.length) {
+      lines.push(finish.message);
+    }
+    if (finish?.detail && !finish.detail.startsWith("tool:")) {
+      lines.push(finish.detail);
+    }
     if (finish?.level === "success") level = "success";
+
     const warn = nodeEvents.find((e) => e.level === "warning");
     if (warn) {
       lines.push(warn.message);
       level = "warning";
     }
   } else if (nodeId === "analyze") {
+    // Collect documents analyzed
+    const docs: string[] = [];
+    for (const e of nodeEvents) {
+      if (e.documents?.length) {
+        for (const d of e.documents) {
+          if (!docs.includes(d)) docs.push(d);
+        }
+      }
+    }
+    if (docs.length > 0) {
+      analyzeDocuments = docs;
+      lines.push(`${docs.length} document${docs.length !== 1 ? "s" : ""} analyzed`);
+      for (const d of docs.slice(0, 4)) lines.push(`  ▸ ${d}`);
+      if (docs.length > 4) lines.push(`  … +${docs.length - 4} more`);
+    }
+
+    // Extract topic/formula/figure counts from detail messages
+    const topicMatch = nodeEvents.find((e) => e.detail?.match(/topic|section|argomento/i));
+    if (topicMatch?.detail) {
+      if (!topicMatch.detail.startsWith("tool:")) {
+        lines.push(`  Info: ${topicMatch.detail}`);
+      }
+    }
+
     const finish = nodeEvents.find((e) => e.level === "success");
-    if (finish?.detail) lines.push(finish.detail);
-    const startDocs = nodeEvents.find((e) => e.documents)?.documents;
-    if (startDocs) lines.push(`Processed: ${startDocs.join(", ")}`);
+    if (finish?.detail && docs.length === 0) lines.push(finish.detail);
+    if (finish?.level === "success") level = "success";
   } else if (nodeId === "merge_analyses") {
     const ev = nodeEvents.find((e) => e.node === "merge_analyses");
     if (ev?.message) lines.push(ev.message);
-    if (ev?.detail) lines.push(ev.detail);
+    if (ev?.detail && !ev.detail.startsWith("tool:")) lines.push(ev.detail);
     if (ev?.level === "success") level = "success";
   } else if (nodeId === "plan") {
     const finish = nodeEvents.find((e) => e.level === "success" && e.plan);
@@ -344,14 +455,15 @@ export function deriveNodeDetails(
       lines.push(
         `${finish.plan.length} section${finish.plan.length !== 1 ? "s" : ""} planned`,
       );
-      for (const s of finish.plan.slice(0, 4))
+      for (const s of finish.plan.slice(0, 5))
         lines.push(`  ▸ ${s.part_title} — ${s.title}`);
-      if (finish.plan.length > 4)
-        lines.push(`  … +${finish.plan.length - 4} more`);
+      if (finish.plan.length > 5)
+        lines.push(`  … +${finish.plan.length - 5} more`);
     }
   } else if (nodeId === "write") {
     const chapEvent = nodeEvents.find((e) => e.action === "chapters_planned");
     if (chapEvent?.chapters) {
+      const details: { name: string; done: number; total: number }[] = [];
       lines.push(
         `${chapEvent.chapters.length} chapter${chapEvent.chapters.length !== 1 ? "s" : ""} in parallel`,
       );
@@ -359,12 +471,13 @@ export function deriveNodeDetails(
         const prog = state.chapterProgress[ch.name];
         const done = prog?.done ?? 0;
         const total = prog?.total ?? ch.sections;
+        const pct = total > 0 ? Math.round((done / total) * 100) : 0;
         const icon =
           done === total && total > 0 ? "✓" : done > 0 ? "◐" : "○";
-        lines.push(`  ${icon} ${ch.name} (${done}/${total})`);
-        if (ch.sections > total)
-          lines.push(`    ${ch.sections} sections total`);
+        lines.push(`  ${icon} ${ch.name}  ${done}/${total} (${pct}%)`);
+        details.push({ name: ch.name, done, total });
       }
+      chapterDetails = details;
     }
     const sectionEvents = nodeEvents.filter(
       (e) => e.chapter_done !== undefined,
@@ -378,13 +491,13 @@ export function deriveNodeDetails(
   } else if (nodeId === "coherence") {
     const ev = nodeEvents.find((e) => e.detail);
     if (ev?.message) lines.push(ev.message);
-    if (ev?.detail) lines.push(ev.detail);
+    if (ev?.detail && !ev.detail.startsWith("tool:")) lines.push(ev.detail);
     if (ev?.level === "warning") level = "warning";
     if (ev?.level === "error") level = "error";
   } else if (nodeId === "citations") {
     const ev = nodeEvents.find((e) => e.detail);
     if (ev?.message) lines.push(ev.message);
-    if (ev?.detail) lines.push(ev.detail);
+    if (ev?.detail && !ev.detail.startsWith("tool:")) lines.push(ev.detail);
     if (ev?.level === "warning") level = "warning";
   } else if (nodeId === "overview") {
     const ev = nodeEvents.find((e) => e.level === "success");
@@ -394,7 +507,7 @@ export function deriveNodeDetails(
   } else if (nodeId === "merge") {
     const ev = nodeEvents.find((e) => e.node === "merge");
     if (ev?.message) lines.push(ev.message);
-    if (ev?.detail) lines.push(ev.detail);
+    if (ev?.detail && !ev.detail.startsWith("tool:")) lines.push(ev.detail);
   } else if (nodeId === "review") {
     const successEv = nodeEvents.find((e) => e.level === "success");
     const errorEvs = nodeEvents.filter(
@@ -408,8 +521,16 @@ export function deriveNodeDetails(
       lines.push(
         `${successEv.tokens.total_tokens.toLocaleString()} tokens · ${successEv.tokens.calls} LLM calls`,
       );
-    for (const err of errorEvs.slice(0, 3))
-      lines.push(err.detail ?? err.message);
+    for (const err of errorEvs.slice(0, 3)) {
+      const msg = err.detail ?? err.message;
+      lines.push(msg);
+      // Capture LaTeX error details for rich display
+      if (err.level === "error" && msg) {
+        errorDetail = errorDetail
+          ? errorDetail + "\n" + msg
+          : msg;
+      }
+    }
     if (errorEvs.length && !successEv) level = "error";
   } else if (nodeId === "judge") {
     const verdict = nodeEvents.find((e) => e.level === "success");
@@ -434,7 +555,16 @@ export function deriveNodeDetails(
     else if (status === "error") lines.push("Failed");
   }
 
-  return { title: labels[nodeId] ?? nodeId, status, lines, level };
+  return {
+    title: labels[nodeId] ?? nodeId,
+    status,
+    lines,
+    level,
+    researchSources,
+    analyzeDocuments,
+    chapterDetails,
+    errorDetail,
+  };
 }
 
 /* ── SVG layout helpers ────────────────────────────────────────────────── */
@@ -507,4 +637,45 @@ export function statusBadge(
     default:
       return { color: COLORS.node.pending.sub, label: "Pending" };
   }
+}
+
+/* ── Phase info derivation ─────────────────────────────────────────────── */
+
+export function derivePhaseInfo(state: GraphState): PhaseInfo {
+  const completedCount = PHASE_ORDER.filter(
+    (id) => state.nodes[id] === "completed",
+  ).length;
+  const totalCount = PHASE_ORDER.length;
+  const progress = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+
+  // Determine the current phase: last active in order, or first pending
+  let currentId = PHASE_ORDER[PHASE_ORDER.length - 1]; // default: last
+  for (const id of PHASE_ORDER) {
+    if (state.nodes[id] === "active") {
+      currentId = id;
+      break;
+    }
+    if (state.nodes[id] === "pending" && currentId === PHASE_ORDER[PHASE_ORDER.length - 1]) {
+      currentId = id;
+    }
+  }
+
+  // Error overrides
+  if (state.errorNode) {
+    currentId = state.errorNode;
+  }
+
+  const phaseIndex = PHASE_ORDER.indexOf(currentId);
+  const activeNodeIds = [...state.activeNodes];
+
+  return {
+    currentPhase: PHASE_LABELS[currentId] ?? currentId,
+    currentIcon: NODE_ICONS[currentId] ?? "",
+    progress,
+    phaseIndex: phaseIndex >= 0 ? phaseIndex + 1 : 0,
+    totalPhases: totalCount,
+    activeNodeIds,
+    completedCount,
+    totalCount,
+  };
 }

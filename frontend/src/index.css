@@ -5,6 +5,94 @@
 @layer base {
   :root {
     color-scheme: light dark;
+
+    /* ── Pipeline Graph node colors (light) ─────────────────────────────── */
+    --pg-node-pending-fill: #f9fafb;
+    --pg-node-pending-stroke: #d1d5db;
+    --pg-node-pending-text: #6b7280;
+    --pg-node-pending-sub: #9ca3af;
+
+    --pg-node-active-fill: #ecfdf5;
+    --pg-node-active-stroke: #10b981;
+    --pg-node-active-text: #065f46;
+    --pg-node-active-sub: #059669;
+
+    --pg-node-done-fill: #f0fdf4;
+    --pg-node-done-stroke: #34d399;
+    --pg-node-done-text: #065f46;
+    --pg-node-done-sub: #10b981;
+
+    --pg-node-error-fill: #fef2f2;
+    --pg-node-error-stroke: #ef4444;
+    --pg-node-error-text: #991b1b;
+    --pg-node-error-sub: #dc2626;
+
+    --pg-edge-active-from: #10b981;
+    --pg-edge-active-to: #34d399;
+    --pg-edge-completed-from: #059669;
+    --pg-edge-completed-to: #10b981;
+    --pg-loopback: #f59e0b;
+    --pg-glow: #10b981;
+    --pg-shadow: #00000022;
+
+    /* Chapter colors (light) */
+    --pg-ch-done-fill: #f0fdf4;
+    --pg-ch-done-stroke: #34d399;
+    --pg-ch-done-text: #065f46;
+    --pg-ch-active-fill: #ecfdf5;
+    --pg-ch-active-stroke: #10b981;
+    --pg-ch-active-text: #065f46;
+    --pg-ch-pending-fill: #f9fafb;
+    --pg-ch-pending-stroke: #d1d5db;
+    --pg-ch-pending-text: #6b7280;
+    --pg-ch-progress-bg: #e5e7eb;
+    --pg-ch-connector-done: #34d399;
+    --pg-ch-connector-pending: #d1d5db;
+  }
+
+  .dark {
+    /* Pipeline Graph node colors (dark) */
+    --pg-node-pending-fill: #1f2937;
+    --pg-node-pending-stroke: #4b5563;
+    --pg-node-pending-text: #d1d5db;
+    --pg-node-pending-sub: #6b7280;
+
+    --pg-node-active-fill: #064e3b;
+    --pg-node-active-stroke: #34d399;
+    --pg-node-active-text: #d1fae5;
+    --pg-node-active-sub: #10b981;
+
+    --pg-node-done-fill: #022c22;
+    --pg-node-done-stroke: #6ee7b7;
+    --pg-node-done-text: #a7f3d0;
+    --pg-node-done-sub: #34d399;
+
+    --pg-node-error-fill: #7f1d1d;
+    --pg-node-error-stroke: #f87171;
+    --pg-node-error-text: #fecaca;
+    --pg-node-error-sub: #ef4444;
+
+    --pg-edge-active-from: #34d399;
+    --pg-edge-active-to: #6ee7b7;
+    --pg-edge-completed-from: #10b981;
+    --pg-edge-completed-to: #34d399;
+    --pg-loopback: #fbbf24;
+    --pg-glow: #34d399;
+    --pg-shadow: #00000055;
+
+    /* Chapter colors (dark) */
+    --pg-ch-done-fill: #022c22;
+    --pg-ch-done-stroke: #6ee7b7;
+    --pg-ch-done-text: #a7f3d0;
+    --pg-ch-active-fill: #064e3b;
+    --pg-ch-active-stroke: #34d399;
+    --pg-ch-active-text: #d1fae5;
+    --pg-ch-pending-fill: #1f2937;
+    --pg-ch-pending-stroke: #4b5563;
+    --pg-ch-pending-text: #9ca3af;
+    --pg-ch-progress-bg: #374151;
+    --pg-ch-connector-done: #6ee7b7;
+    --pg-ch-connector-pending: #4b5563;
   }
 
   html,
@@ -60,25 +148,10 @@
     100% { stroke-dashoffset: 0; }
   }
 
-  /* Pulse dot on active node */
-  @keyframes pulse-dot {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.5; transform: scale(1.3); }
-  }
-
-  /* Expanding ring on active node */
-  @keyframes pulse-ring {
-    0% { opacity: 0.4; transform: scale(0.8); }
-    100% { opacity: 0; transform: scale(2.5); }
-  }
-
   /* ── Node-specific animations ────────────────────────────────────────── */
 
-  /* Active node: breathing glow */
-  @keyframes node-active-glow {
-    0%, 100% { filter: drop-shadow(0 0 6px rgba(16, 185, 129, 0.45)); }
-    50% { filter: drop-shadow(0 0 14px rgba(16, 185, 129, 0.7)); }
-  }
+  /* Active glow is handled by SVG filter (url(#active-glow-strong)) on the <g>.
+     No CSS drop-shadow animation — it would conflict with the SVG filter. */
 
   /* Completed node: satisfying scale-pop (one-shot) */
   @keyframes node-complete-pop {
@@ -89,15 +162,24 @@
     100% { transform: scale(1); }
   }
 
-  /* Error node: subtle shake */
+  /* Error node: stronger shake with flash */
   @keyframes node-error-shake {
     0%, 100% { transform: translateX(0); }
-    15% { transform: translateX(-4px); }
-    30% { transform: translateX(4px); }
-    45% { transform: translateX(-3px); }
+    10% { transform: translateX(-6px); }
+    20% { transform: translateX(6px); }
+    30% { transform: translateX(-5px); }
+    40% { transform: translateX(5px); }
+    50% { transform: translateX(-3px); }
     60% { transform: translateX(3px); }
-    75% { transform: translateX(-1px); }
-    85% { transform: translateX(1px); }
+    70% { transform: translateX(-2px); }
+    80% { transform: translateX(2px); }
+    90% { transform: translateX(-1px); }
+  }
+
+  /* Tooltip fade-in */
+  @keyframes tooltip-fade-in {
+    0% { opacity: 0; transform: translateY(6px); }
+    100% { opacity: 1; transform: translateY(0); }
   }
 
   .animate-preset-pop {
@@ -120,27 +202,25 @@
     animation: edge-march 0.6s linear infinite;
   }
 
-  .animate-pulse-dot {
-    animation: pulse-dot 1.5s ease-in-out infinite;
-  }
-
-  .animate-pulse-ring {
-    animation: pulse-ring 1.5s ease-out infinite;
-    transform-origin: center;
-  }
-
-  .animate-node-active-glow {
-    animation: node-active-glow 2s ease-in-out infinite;
-  }
-
   .animate-node-complete-pop {
     animation: node-complete-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
   }
 
   .animate-node-error-shake {
-    animation: node-error-shake 0.55s ease-in-out;
+    animation: node-error-shake 0.6s ease-in-out;
   }
 
+  .animate-tooltip-fade-in {
+    animation: tooltip-fade-in 0.2s ease-out;
+  }
+
+  /* Phase indicator gradient text */
+  .phase-gradient-text {
+    background: linear-gradient(135deg, #10b981, #34d399);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
 }
 
 @layer components {

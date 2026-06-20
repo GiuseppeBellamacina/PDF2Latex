@@ -174,7 +174,6 @@ export default function UploadPage() {
                   checked={researchMode}
                   onChange={(checked) => {
                     setResearchMode(checked);
-                    if (checked) setFiles([]);
                   }}
                   label={
                     <span className="flex items-center gap-1.5">
@@ -466,7 +465,7 @@ export default function UploadPage() {
 
         <button
           className="btn-primary w-full"
-          disabled={!canSubmit || submitting || (researchMode && webToolIds.size === 0)}
+          disabled={!canSubmit || submitting}
           onClick={handleSubmit}
         >
           {submitting

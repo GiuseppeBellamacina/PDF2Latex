@@ -270,16 +270,16 @@ describe("deriveNodeDetails", () => {
     const labels: Record<string, string> = {
       extract: "Extraction",
       research: "Web Research",
-      analyze: "Analysis",
+      analyze: "Document Analysis",
       merge_analyses: "Source Merge",
-      plan: "Planning",
-      write: "Writing",
+      plan: "Outline Planning",
+      write: "Chapter Writing",
       overview: "Overview",
-      coherence: "Coherence",
-      citations: "Citations",
-      merge: "Merge",
-      review: "Review",
-      judge: "Judge",
+      coherence: "Coherence Check",
+      citations: "Citation Review",
+      merge: "Final Merge",
+      review: "LaTeX Review",
+      judge: "Quality Judge",
     };
     for (const [id, label] of Object.entries(labels)) {
       const detail = deriveNodeDetails(id, [], pendingState);
@@ -325,15 +325,15 @@ describe("deriveNodeDetails", () => {
       expect(detail!.lines).toContain("  ▸ refs.pdf");
     });
 
-    it("truncates filenames beyond 5 with ellipsis", () => {
-      const events: ProgressEvent[] = Array.from({ length: 7 }, (_, i) => ({
+    it("truncates filenames beyond 6 with ellipsis", () => {
+      const events: ProgressEvent[] = Array.from({ length: 8 }, (_, i) => ({
         stage: "extracting",
         node: "extract",
-        message: `Estrazione doc${i}.pdf (${i + 1}/7)`,
+        message: `Estrazione doc${i}.pdf (${i + 1}/8)`,
         level: "info" as const,
       }));
       const detail = deriveNodeDetails("extract", events, pendingState);
-      expect(detail!.lines).toContain("7 documents");
+      expect(detail!.lines).toContain("8 documents");
       expect(detail!.lines).toContain("  … +2 more");
     });
 
@@ -416,7 +416,9 @@ describe("deriveNodeDetails", () => {
         },
       ];
       const detail = deriveNodeDetails("analyze", events, pendingState);
-      expect(detail!.lines).toContain("Processed: main.pdf, appendix.pdf");
+      expect(detail!.lines).toContain("2 documents analyzed");
+      expect(detail!.lines).toContain("  ▸ main.pdf");
+      expect(detail!.lines).toContain("  ▸ appendix.pdf");
     });
 
     it("shows finish detail", () => {
@@ -472,8 +474,8 @@ describe("deriveNodeDetails", () => {
       expect(detail!.lines).toContain("  ▸ Part II — Methods");
     });
 
-    it("truncates sections beyond 4", () => {
-      const plan = Array.from({ length: 6 }, (_, i) => ({
+    it("truncates sections beyond 5", () => {
+      const plan = Array.from({ length: 7 }, (_, i) => ({
         part_title: `Part ${i}`,
         title: `Section ${i}`,
       }));
@@ -487,7 +489,7 @@ describe("deriveNodeDetails", () => {
         },
       ];
       const detail = deriveNodeDetails("plan", events, pendingState);
-      expect(detail!.lines).toContain("6 sections planned");
+      expect(detail!.lines).toContain("7 sections planned");
       expect(detail!.lines).toContain("  … +2 more");
     });
   });
@@ -525,8 +527,8 @@ describe("deriveNodeDetails", () => {
       const state = deriveState(events);
       const detail = deriveNodeDetails("write", events, state);
       expect(detail!.lines).toContain("2 chapters in parallel");
-      expect(detail!.lines).toContain("  ✓ Intro (2/2)");
-      expect(detail!.lines).toContain("  ◐ Methods (1/3)");
+      expect(detail!.lines).toContain("  ✓ Intro  2/2 (100%)");
+      expect(detail!.lines).toContain("  ◐ Methods  1/3 (33%)");
     });
 
     it("shows sections written count", () => {

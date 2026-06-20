@@ -425,6 +425,8 @@ def write_and_compile(
             cwd=work_dir,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=300,
         )
 
@@ -442,6 +444,8 @@ def write_and_compile(
                 cwd=work_dir,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=120,
             )
             log_acc.append("[bibtex]\n" + (bib.stdout or "")[-2000:])
