@@ -64,17 +64,17 @@ describe("deriveState", () => {
     expect(state.activeNodes.has("analyze")).toBe(false);
   });
 
-  it("does not activate nodes if a predecessor is still pending", () => {
-    // Only extract completed; research is still pending → analyze NOT active
+  it("activates parallel branches when predecessors are done", () => {
+    // Only extract completed; both research AND analyze become active (DAG-parallel)
     const events: ProgressEvent[] = [
       { stage: "extracting", node: "extract", level: "success", message: "ok" },
     ];
     const state = deriveState(events);
-    // research is next after extract (extract done, research pending → active)
+    // research depends on extract → active
     expect(state.activeNodes.has("research")).toBe(true);
-    // analyze has research as predecessor which is still pending
-    expect(state.activeNodes.has("analyze")).toBe(false);
-    // merge_analyses also blocked
+    // analyze depends only on extract (via EDGES) → also active (parallel branch)
+    expect(state.activeNodes.has("analyze")).toBe(true);
+    // merge_analyses depends on BOTH research AND analyze → blocked
     expect(state.activeNodes.has("merge_analyses")).toBe(false);
   });
 
@@ -746,14 +746,15 @@ describe("deriveNodeDetails", () => {
   });
 
   describe("fallback messages", () => {
-    it('shows "Waiting to start…" for pending nodes with no events', () => {
+    it('shows "In progress…" for active pending nodes with no events', () => {
+      // extract is the root node → always active from start
       const detail = deriveNodeDetails("extract", [], pendingState);
-      expect(detail!.lines).toEqual(["Waiting to start…"]);
+      expect(detail!.lines).toEqual(["In progress…"]);
     });
 
-    it('shows "Waiting to start…" for active nodes with no events (status stays pending)', () => {
+    it('shows "In progress…" for active nodes with no events (status stays pending)', () => {
       // After extract completes, research becomes active (all predecessors done)
-      // but its state.nodes["research"] is still "pending", so fallback says "Waiting to start…"
+      // but its state.nodes["research"] is still "pending", so fallback says "In progress…"
       const state = deriveState([
         {
           stage: "extracting",
@@ -764,7 +765,7 @@ describe("deriveNodeDetails", () => {
       ]);
       expect(state.activeNodes.has("research")).toBe(true);
       const detail = deriveNodeDetails("research", [], state);
-      expect(detail!.lines).toEqual(["Waiting to start…"]);
+      expect(detail!.lines).toEqual(["In progress…"]);
       expect(detail!.status).toBe("pending");
     });
 

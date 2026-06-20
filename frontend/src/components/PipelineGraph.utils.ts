@@ -200,31 +200,36 @@ export function deriveState(events: ProgressEvent[]): GraphState {
   let errorNode: string | null = null;
   let judgeRevising = false;
 
-  const order = PHASE_ORDER;
-  let highestCompleted = -1;
-
   for (const e of events) {
     const nid = e.node;
     if (nid && nodes[nid] !== undefined) {
-      const idx = order.indexOf(nid);
-
       if (e.level === "error") {
         nodes[nid] = "error";
         errorNode = nid;
-      } else if (e.level === "success") {
+      } else if (e.level === "success" || e.level === "warning") {
+        // Warning means the node finished its work (possibly with issues).
+        // The warning color still renders in the UI to signal imperfect results.
         nodes[nid] = "completed";
-        if (idx > highestCompleted) highestCompleted = idx;
       }
     }
 
+    // Backend guarantees that sending a "success" event for extract, research,
+    // or analyze marks them completed. In addition, infer completion when
+    // downstream nodes start (robustness against missing success events).
     // Mark extract as completed when analyze events start arriving.
     if (e.node === "analyze" && nodes["extract"] === "pending") {
       nodes["extract"] = "completed";
     }
-
     // Mark research as completed when merge_analyses events arrive.
     if (e.node === "merge_analyses" && nodes["research"] === "pending") {
       nodes["research"] = "completed";
+    }
+    // Mark diamond nodes (overview, coherence, citations) completed
+    // when merge events arrive.
+    if (e.node === "merge") {
+      for (const d of ["overview", "coherence", "citations"]) {
+        if (nodes[d] === "pending") nodes[d] = "completed";
+      }
     }
 
     // Chapters planned
@@ -258,14 +263,22 @@ export function deriveState(events: ProgressEvent[]): GraphState {
     }
   }
 
-  // Determine active nodes: all pending nodes whose predecessors are completed.
-  for (const nid of order) {
+  // Build predecessor map from EDGES (which reflects the actual DAG topology).
+  const predecessors: Record<string, string[]> = {};
+  for (const n of MAIN_NODES) predecessors[n.id] = [];
+  for (const [from, to] of EDGES) {
+    predecessors[to].push(from);
+  }
+
+  // Detect active nodes: a pending node is active when ALL its predecessors
+  // are completed. This correctly handles parallel branches (research+analyze
+  // both become active after extract completes) and the diamond merge.
+  for (const nid of PHASE_ORDER) {
     if (nodes[nid] !== "pending") continue;
-    const idx = order.indexOf(nid);
-    const allBeforeDone = order
-      .slice(0, idx)
-      .every((prev) => nodes[prev] === "completed");
-    if (allBeforeDone) {
+    const allPredsDone = (predecessors[nid] ?? []).every(
+      (p) => nodes[p] === "completed",
+    );
+    if (allPredsDone) {
       activeNodes.add(nid);
     }
   }
@@ -283,19 +296,22 @@ export function deriveState(events: ProgressEvent[]): GraphState {
     }
   }
 
-  // Mark diamond nodes completed if merge is completed.
-  if (nodes["merge"] === "completed") {
-    for (const n of ["overview", "coherence", "citations"]) {
-      if (nodes[n] === "pending") nodes[n] = "completed";
-      activeNodes.delete(n);
-    }
-  }
-
-  // If any node errored, clear activeNodes after it.
+  // If any node errored, clear downstream active nodes.
   if (errorNode) {
-    const errIdx = order.indexOf(errorNode);
+    // Find all nodes reachable after errorNode in the DAG
+    const reachable = new Set<string>();
+    const queue = [errorNode];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      for (const [from, to] of EDGES) {
+        if (from === cur && !reachable.has(to)) {
+          reachable.add(to);
+          queue.push(to);
+        }
+      }
+    }
     for (const nid of activeNodes) {
-      if (order.indexOf(nid) > errIdx) activeNodes.delete(nid);
+      if (reachable.has(nid)) activeNodes.delete(nid);
     }
   }
 
@@ -549,9 +565,11 @@ export function deriveNodeDetails(
   }
 
   if (lines.length === 0) {
-    if (status === "pending") lines.push("Waiting to start…");
+    // A node that is pending but in activeNodes is conceptually "in progress"
+    const isActive = status === "pending" && state.activeNodes.has(nodeId);
+    if (isActive) lines.push("In progress…");
+    else if (status === "pending") lines.push("Waiting to start…");
     else if (status === "completed") lines.push("Completed");
-    else if (status === "active") lines.push("In progress…");
     else if (status === "error") lines.push("Failed");
   }
 
@@ -587,8 +605,9 @@ export function y0(row: number): number {
   return cy(row) - NODE_H / 2;
 }
 
-/** Chapter sub-node positions: fan out below the write node. */
-export const CHAPTER_START_Y = CENTER_Y + NODE_H / 2 + 36;
+/** Chapter sub-node positions: fan out below the lowest main node (row=1). */
+const maxRow = Math.max(...MAIN_NODES.map((n) => n.row));
+export const CHAPTER_START_Y = CENTER_Y + maxRow * ROW_SPREAD + NODE_H / 2 + 40;
 export const CHAPTER_ROW_H = CHAPTER_H + 12;
 
 export function chapterX(index: number, total: number): number {
@@ -665,14 +684,14 @@ export function derivePhaseInfo(state: GraphState): PhaseInfo {
     currentId = state.errorNode;
   }
 
-  const phaseIndex = PHASE_ORDER.indexOf(currentId);
   const activeNodeIds = [...state.activeNodes];
 
   return {
     currentPhase: PHASE_LABELS[currentId] ?? currentId,
     currentIcon: NODE_ICONS[currentId] ?? "",
     progress,
-    phaseIndex: phaseIndex >= 0 ? phaseIndex + 1 : 0,
+    // phaseIndex tracks completedCount + 1 so it never diverges from progress bar
+    phaseIndex: Math.min(completedCount + 1, totalCount),
     totalPhases: totalCount,
     activeNodeIds,
     completedCount,

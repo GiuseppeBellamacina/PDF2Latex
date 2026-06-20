@@ -122,6 +122,13 @@ def assemble_document(
     # ── Body ────────────────────────────────────────────────────────────────
     body = "\n\n".join(body_parts)
 
+    # Escape bare '#' (macro parameter char) — most common LaTeX crash from LLM output.
+    # A bare # in horizontal mode causes `! You can't use 'macro parameter character #'`.
+    # Only escape # NOT preceded by \ (which would be already-escaped \#).
+    import re
+
+    body = re.sub(r"(?<!\\)#", r"\\#", body)
+
     # ── Bibliography ────────────────────────────────────────────────────────
     bibliography = ""
     if has_bibliography:
