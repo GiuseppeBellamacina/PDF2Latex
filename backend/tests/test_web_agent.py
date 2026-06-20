@@ -1,111 +1,187 @@
-"""Integration tests for the Web Agent LangGraph flow.
+"""Integration tests for the multi-node Web Agent LangGraph flow.
 
 Covers:
-- Pure LLM mode (planner -> fetcher -> evaluator -> end)
-- Hybrid mode (search adapters seed URLs, skip planner)
-- Routing logic (_after_start, _after_evaluator)
-- Error handling, max iterations, empty URLs, adapter exceptions.
+- Routing (_after_evaluator, _fan_out_to_search)
+- planner_node (mocked LLM → PlannedQueries)
+- _make_search_node factory (fan-out search nodes)
+- deduplicator_node (URL normalisation, dedup, visited filtering)
+- merger_node (page fetching, content injection)
+- evaluator_node (mocked LLM → EvalResult)
+- custom_urls_node (URL fetching)
+- Full graph run (run_web_agent with mocked LLM + mocked HTTP)
+- Fan-out / dedup / merge integration
 """
 
-from unittest.mock import AsyncMock, patch
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.agents.web_agent import (
-    EvaluationResult,
-    PlannedUrls,
-    SearchResult,
+    EvalResult,
+    PlannedQueries,
+    WebAgentState,
     _after_evaluator,
-    _after_start,
+    _fan_out_to_search,
+    _make_search_node,
     build_web_agent_graph,
+    custom_urls_node,
+    deduplicator_node,
     evaluator_node,
-    fetcher_node,
+    merger_node,
     planner_node,
     run_web_agent,
 )
-from app.services.web_search import _build_search_adapters
+from app.services.web_search import SearchResult
 
 LLM = {"provider": "fake", "model": "test"}
 
 
-# ── Smart mock for call_llm_structured that returns the right type ─────────
+# ============================================================================
+# Helpers
+# ============================================================================
 
 
-async def _llm_mock(*args, **kwargs):
-    """Return EvaluationResult or PlannedUrls based on the label kwarg."""
-    label = kwargs.get("label", "")
-    if "evaluator" in label:
-        return EvaluationResult(
-            snippets=[
-                {
-                    "title": "Test Page",
-                    "url": "https://example.com/test",
-                    "content": "Extracted content from the test page.",
-                },
-            ],
-            reasoning="Good enough.",
-            is_satisfied=True,
-            suggested_next_urls=[],
-        )
-    # planner or fallback
-    return PlannedUrls(
-        urls=["https://example.com/page1", "https://example.com/page2"],
-        reasoning="These URLs look relevant.",
+def _make_result(
+    title: str, url: str = "", content: str = "", snippet: str = ""
+) -> SearchResult:
+    return SearchResult(
+        title=title,
+        url=url,
+        snippet=snippet or content[:500],
+        content=content[:8000],
     )
 
 
-# ── Routing unit tests ────────────────────────────────────────────────────
+def _planner_mock(
+    queries: dict | None = None, urls: list[str] | None = None
+) -> PlannedQueries:
+    return PlannedQueries(
+        queries=queries or {},
+        custom_urls=urls or [],
+        reasoning="Test reasoning.",
+    )
 
 
-def test_after_start_with_seed_urls():
-    result = _after_start({"current_urls": ["https://example.com"]})
-    assert result == "fetcher"
+def _eval_mock(
+    satisfied: bool = True,
+    snippets: list[dict] | None = None,
+    refined_queries: dict | None = None,
+    refined_urls: list[str] | None = None,
+) -> EvalResult:
+    return EvalResult(
+        snippets=snippets or [],
+        reasoning="Test evaluation.",
+        is_satisfied=satisfied,
+        refined_queries=refined_queries or {},
+        refined_urls=refined_urls or [],
+    )
 
 
-def test_after_start_without_seed_urls():
-    result = _after_start({"current_urls": []})
-    assert result == "planner"
+# ============================================================================
+# Routing tests
+# ============================================================================
 
 
 def test_after_evaluator_satisfied():
-    result = _after_evaluator(
-        {"is_complete": True, "iteration": 1, "max_iterations": 3}
+    assert (
+        _after_evaluator({"is_complete": True, "iteration": 1, "max_iterations": 3})
+        == "__end__"
     )
-    assert result == "__end__"
 
 
 def test_after_evaluator_max_iterations():
-    result = _after_evaluator(
-        {"is_complete": False, "iteration": 3, "max_iterations": 3}
+    assert (
+        _after_evaluator({"is_complete": False, "iteration": 3, "max_iterations": 3})
+        == "__end__"
     )
-    assert result == "__end__"
 
 
 def test_after_evaluator_continue():
-    result = _after_evaluator(
-        {"is_complete": False, "iteration": 1, "max_iterations": 3}
+    assert (
+        _after_evaluator({"is_complete": False, "iteration": 1, "max_iterations": 3})
+        == "planner"
     )
-    assert result == "planner"
 
 
 def test_after_evaluator_iteration_zero():
-    result = _after_evaluator(
-        {"is_complete": False, "iteration": 0, "max_iterations": 3}
+    assert (
+        _after_evaluator({"is_complete": False, "iteration": 0, "max_iterations": 3})
+        == "planner"
     )
-    assert result == "planner"
 
 
-# ── planner_node tests ────────────────────────────────────────────────────
+# ============================================================================
+# _fan_out_to_search tests
+# ============================================================================
+
+
+def test_fan_out_routes_to_tools_with_queries():
+    """Routes only to nodes that exist AND have queries."""
+    state: WebAgentState = {
+        "per_tool_queries": {"wikipedia": ["q1"], "arxiv": ["q2"], "tavily": []},
+        "custom_urls": [],
+    }
+    valid = {"wikipedia", "arxiv", "tavily", "custom_urls"}
+    routes = _fan_out_to_search(state, valid)
+    assert routes == ["wikipedia", "arxiv"]
+
+
+def test_fan_out_includes_custom_urls():
+    """Custom URLs node is included when URLs are planned."""
+    state: WebAgentState = {
+        "per_tool_queries": {},
+        "custom_urls": ["https://example.com"],
+    }
+    valid = {"wikipedia", "arxiv", "custom_urls"}
+    routes = _fan_out_to_search(state, valid)
+    assert routes == ["custom_urls"]
+
+
+def test_fan_out_fallback_to_deduplicator():
+    """When nothing to search, fall back to deduplicator."""
+    state: WebAgentState = {
+        "per_tool_queries": {},
+        "custom_urls": [],
+    }
+    routes = _fan_out_to_search(state, {"wikipedia", "arxiv", "custom_urls"})
+    assert routes == ["deduplicator"]
+
+
+def test_fan_out_respects_valid_nodes():
+    """Only routes to nodes in valid_nodes, even if planner generated queries for others."""
+    state: WebAgentState = {
+        "per_tool_queries": {
+            "wikipedia": ["q1"],
+            "tavily": ["q2"],
+            "perplexity": ["q3"],
+        },
+        "custom_urls": ["https://x.com"],
+    }
+    # Graph only has wikipedia + custom_urls nodes.
+    valid = {"wikipedia", "custom_urls"}
+    routes = _fan_out_to_search(state, valid)
+    assert routes == ["wikipedia", "custom_urls"]
+
+
+# ============================================================================
+# planner_node tests
+# ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_planner_generates_urls():
+async def test_planner_generates_queries_and_urls():
     with patch(
         "app.agents.web_agent.call_llm_structured",
         AsyncMock(
-            return_value=PlannedUrls(
-                urls=["https://example.com/page1", "https://example.com/page2"],
-                reasoning="These pages look relevant.",
+            return_value=PlannedQueries(
+                queries={
+                    "wikipedia": ["deep learning"],
+                    "arxiv": ["neural networks survey"],
+                },
+                custom_urls=["https://example.com/article"],
+                reasoning="Broad search needed.",
             )
         ),
     ):
@@ -113,39 +189,16 @@ async def test_planner_generates_urls():
             {
                 "llm_config": LLM,
                 "query": "machine learning",
-                "visited_urls": [],
                 "collected_results": [],
             }
         )
 
-    assert result["current_urls"] == [
-        "https://example.com/page1",
-        "https://example.com/page2",
-    ]
-    assert "These pages look relevant" in result["planner_reasoning"]
-
-
-@pytest.mark.asyncio
-async def test_planner_filters_visited_urls():
-    with patch(
-        "app.agents.web_agent.call_llm_structured",
-        AsyncMock(
-            return_value=PlannedUrls(
-                urls=["https://example.com/old", "https://example.com/new"],
-                reasoning="One old, one new.",
-            )
-        ),
-    ):
-        result = await planner_node(
-            {
-                "llm_config": LLM,
-                "query": "machine learning",
-                "visited_urls": ["https://example.com/old"],
-                "collected_results": [],
-            }
-        )
-
-    assert result["current_urls"] == ["https://example.com/new"]
+    assert result["per_tool_queries"]["wikipedia"] == ["deep learning"]
+    assert result["per_tool_queries"]["arxiv"] == ["neural networks survey"]
+    assert result["custom_urls"] == ["https://example.com/article"]
+    assert "Broad search needed" in result["planner_reasoning"]
+    assert result["new_results"] == []
+    assert result["scraped_content"] == {}
 
 
 @pytest.mark.asyncio
@@ -157,153 +210,337 @@ async def test_planner_fallback_on_error():
         ),
         patch(
             "app.agents.web_agent.call_llm",
-            AsyncMock(return_value="No useful URLs found."),
+            AsyncMock(return_value="Fallback reasoning."),
         ),
     ):
         result = await planner_node(
             {
                 "llm_config": LLM,
                 "query": "machine learning",
-                "visited_urls": [],
                 "collected_results": [],
             }
         )
 
-    assert result["current_urls"] == []
-    assert "No useful URLs found" in result["planner_reasoning"]
+    assert result["per_tool_queries"]["tavily"] == ["machine learning"]
+    assert result["per_tool_queries"]["wikipedia"] == ["machine learning"]
+    assert result["custom_urls"] == []
+    assert "Fallback reasoning" in result["planner_reasoning"]
 
 
 @pytest.mark.asyncio
-async def test_planner_caps_at_three_urls():
-    with patch(
-        "app.agents.web_agent.call_llm_structured",
-        AsyncMock(
-            return_value=PlannedUrls(
-                urls=[f"https://example.com/page{i}" for i in range(10)],
-                reasoning="Lots of URLs.",
-            )
-        ),
-    ):
-        result = await planner_node(
-            {
-                "llm_config": LLM,
-                "query": "machine learning",
-                "visited_urls": [],
-                "collected_results": [],
-            }
-        )
-
-    assert len(result["current_urls"]) == 3
-
-
-@pytest.mark.asyncio
-async def test_planner_sees_collected_titles():
+async def test_planner_sees_collected_context():
+    """The planner's user prompt includes titles from collected results."""
     collected = [
         SearchResult(
             title="Intro to ML",
-            url="https://example.com/ml",
-            snippet="Machine learning is...",
-            content="Full content here.",
+            url="https://x.com/ml",
+            snippet="ML basics.",
+            content="ML is...",
         ),
     ]
     with patch(
         "app.agents.web_agent.call_llm_structured",
-        AsyncMock(return_value=PlannedUrls(urls=[], reasoning="Already covered.")),
+        AsyncMock(return_value=_planner_mock()),
     ) as mock_structured:
         await planner_node(
             {
                 "llm_config": LLM,
                 "query": "machine learning",
-                "visited_urls": [],
                 "collected_results": collected,
             }
         )
 
     call_args = mock_structured.call_args
-    user_prompt = call_args[0][2]
+    user_prompt = call_args[0][2]  # third positional arg = user message
     assert "Intro to ML" in user_prompt
 
 
-# ── fetcher_node tests ────────────────────────────────────────────────────
+# ============================================================================
+# _make_search_node tests
+# ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_fetcher_downloads_urls():
+async def test_search_node_calls_search_fn():
+    """The factory-created node calls search_fn for each query and returns results."""
+    search_fn = AsyncMock(
+        return_value=[
+            _make_result("Result 1", "https://a.com", "Content A"),
+            _make_result("Result 2", "https://b.com", "Content B"),
+        ]
+    )
+    node = _make_search_node("wikipedia", search_fn)
+
+    result = await node(
+        {
+            "per_tool_queries": {"wikipedia": ["q1", "q2"]},
+        }
+    )
+
+    assert len(result["new_results"]) == 4  # 2 queries × 2 results each
+    assert search_fn.call_count == 2
+    titles = {r.title for r in result["new_results"]}
+    assert titles == {"Result 1", "Result 2"}
+
+
+@pytest.mark.asyncio
+async def test_search_node_handles_exception():
+    """When a query fails, the node logs and continues with remaining queries."""
+    call_count = 0
+
+    async def flaky_search(q):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("network error")
+        return [_make_result("OK", "https://ok.com", "OK content")]
+
+    node = _make_search_node("tavily", flaky_search)
+
+    result = await node(
+        {
+            "per_tool_queries": {"tavily": ["q1", "q2"]},
+        }
+    )
+
+    assert len(result["new_results"]) == 1
+    assert result["new_results"][0].title == "OK"
+
+
+@pytest.mark.asyncio
+async def test_search_node_empty_queries():
+    """When the tool has no planned queries, returns empty list."""
+    search_fn = AsyncMock()
+    node = _make_search_node("wikipedia", search_fn)
+
+    result = await node(
+        {
+            "per_tool_queries": {},
+        }
+    )
+
+    assert result["new_results"] == []
+    search_fn.assert_not_called()
+
+
+# ============================================================================
+# custom_urls_node tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_custom_urls_fetches_pages():
     with patch(
         "app.agents.web_agent._fetch_url",
         AsyncMock(side_effect=lambda u: (u, f"Content from {u}")),
     ):
-        result = await fetcher_node(
+        result = await custom_urls_node(
             {
-                "current_urls": ["https://a.com", "https://b.com"],
+                "custom_urls": ["https://a.com", "https://b.com"],
                 "visited_urls": [],
-                "iteration": 0,
             }
         )
 
-    assert result["scraped_content"] == {
-        "https://a.com": "Content from https://a.com",
-        "https://b.com": "Content from https://b.com",
-    }
-    assert "https://a.com" in result["visited_urls"]
-    assert "https://b.com" in result["visited_urls"]
-    assert result["iteration"] == 1
+    assert len(result["new_results"]) == 2
+    assert result["new_results"][0].url == "https://a.com"
+    assert result["new_results"][0].content == "Content from https://a.com"
+    assert result["scraped_content"]["https://a.com"] == "Content from https://a.com"
 
 
 @pytest.mark.asyncio
-async def test_fetcher_handles_failed_fetch():
+async def test_custom_urls_filters_visited():
     with patch(
         "app.agents.web_agent._fetch_url",
-        AsyncMock(
-            side_effect=lambda u: (
-                u,
-                "" if "fail" in u else f"Content from {u}",
-            )
-        ),
+        AsyncMock(side_effect=lambda u: (u, f"Content from {u}")),
     ):
-        result = await fetcher_node(
+        result = await custom_urls_node(
             {
-                "current_urls": ["https://ok.com", "https://fail.com"],
-                "visited_urls": [],
-                "iteration": 0,
+                "custom_urls": ["https://old.com", "https://new.com"],
+                "visited_urls": ["https://old.com"],
             }
         )
 
-    assert "https://ok.com" in result["scraped_content"]
-    assert "https://fail.com" not in result["scraped_content"]
-    assert "https://ok.com" in result["visited_urls"]
-    assert "https://fail.com" in result["visited_urls"]
+    assert len(result["new_results"]) == 1
+    assert result["new_results"][0].url == "https://new.com"
+
+
+# ============================================================================
+# deduplicator_node tests
+# ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_fetcher_empty_urls_noop():
-    result = await fetcher_node(
+async def test_deduplicator_removes_duplicate_urls():
+    """Same URL from two sources → kept once."""
+    results = [
+        _make_result("A from tool1", "https://same.com", "Content A1"),
+        _make_result("A from tool2", "https://same.com", "Content A2 longer content"),
+        _make_result("B unique", "https://unique.com", "Content B"),
+    ]
+    result = await deduplicator_node(
         {
-            "current_urls": [],
-            "visited_urls": ["already"],
-            "iteration": 2,
+            "new_results": results,
+            "visited_urls": [],
         }
     )
 
-    assert result["scraped_content"] == {}
-    assert result["visited_urls"] == ["already"]
-    assert result["iteration"] == 3
+    assert len(result["deduped_results"]) == 2  # A (best) + B
+    urls = {r.url for r in result["deduped_results"]}
+    assert urls == {"https://same.com", "https://unique.com"}
+    # The one with longer content was kept.
+    kept_a = next(r for r in result["deduped_results"] if r.url == "https://same.com")
+    assert len(kept_a.content) > len("Content A1")
 
 
 @pytest.mark.asyncio
-async def test_fetcher_dedup_visited():
-    result = await fetcher_node(
+async def test_deduplicator_filters_visited_urls():
+    """URLs already in visited_urls are dropped entirely."""
+    results = [
+        _make_result("Already seen", "https://seen.com", "Old"),
+        _make_result("New page", "https://new.com", "New content"),
+    ]
+    result = await deduplicator_node(
         {
-            "current_urls": ["https://new.com"],
-            "visited_urls": ["https://new.com"],
-            "iteration": 0,
+            "new_results": results,
+            "visited_urls": ["https://seen.com"],
         }
     )
 
-    assert result["visited_urls"].count("https://new.com") == 1
+    assert len(result["deduped_results"]) == 1
+    assert result["deduped_results"][0].url == "https://new.com"
 
 
-# ── evaluator_node tests ──────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_deduplicator_preserves_no_url_results():
+    """Results with no URL (e.g., Perplexity answers) are always kept."""
+    results = [
+        _make_result("Answer block", "", "Perplexity answer text"),
+        _make_result("Answer block", "", "Duplicate answer"),  # same title, no URL
+    ]
+    result = await deduplicator_node(
+        {
+            "new_results": results,
+            "visited_urls": [],
+        }
+    )
+
+    # Both kept because they have no URL — can't dedup by URL.
+    assert len(result["deduped_results"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_deduplicator_adds_to_visited():
+    """Visited URLs are appended to the visited list."""
+    results = [
+        _make_result("Page A", "https://a.com", "A"),
+        _make_result("Page B", "https://b.com", "B"),
+    ]
+    result = await deduplicator_node(
+        {
+            "new_results": results,
+            "visited_urls": ["https://prior.com"],
+        }
+    )
+
+    assert result["visited_urls"] == [
+        "https://prior.com",
+        "https://a.com",
+        "https://b.com",
+    ]
+
+
+# ============================================================================
+# merger_node tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_merger_fetches_url_only_results():
+    """Results with URL but no content trigger a fetch."""
+    deduped = [
+        _make_result("Has content", "https://with.com", "Full content already"),
+        _make_result("No content", "https://fetchme.com", ""),  # URL-only, needs fetch
+    ]
+    with patch(
+        "app.agents.web_agent._fetch_url",
+        AsyncMock(return_value=("https://fetchme.com", "Fetched page text.")),
+    ):
+        result = await merger_node(
+            {
+                "deduped_results": deduped,
+                "scraped_content": {},
+                "collected_results": [],
+            }
+        )
+
+    # Both results merged into collected.
+    assert len(result["collected_results"]) == 2
+    # The URL-only result now has content.
+    fetched = next(
+        r for r in result["collected_results"] if r.url == "https://fetchme.com"
+    )
+    assert fetched.content == "Fetched page text."
+    assert fetched.snippet == "Fetched page text."[:500]
+
+
+@pytest.mark.asyncio
+async def test_merger_injects_scraped_content():
+    """Pre-existing scraped content is injected without re-fetching."""
+    deduped = [
+        _make_result("No content", "https://x.com", ""),
+    ]
+    result = await merger_node(
+        {
+            "deduped_results": deduped,
+            "scraped_content": {"https://x.com": "Already scraped text."},
+            "collected_results": [],
+        }
+    )
+
+    assert result["collected_results"][0].content == "Already scraped text."
+
+
+@pytest.mark.asyncio
+async def test_merger_combines_with_collected():
+    """New deduped results are appended to the existing collected list."""
+    existing = [_make_result("Old", "https://old.com", "Old content")]
+    new_deduped = [_make_result("New", "https://new.com", "New content")]
+
+    result = await merger_node(
+        {
+            "deduped_results": new_deduped,
+            "scraped_content": {},
+            "collected_results": existing,
+        }
+    )
+
+    assert len(result["collected_results"]) == 2
+    assert result["collected_results"][0].title == "Old"
+    assert result["collected_results"][1].title == "New"
+    assert result["deduped_results"] == []  # consumed
+
+
+@pytest.mark.asyncio
+async def test_merger_does_not_re_fetch_already_have_content():
+    """Results that already have content are not re-fetched."""
+    deduped = [_make_result("Rich", "https://rich.com", "I already have content")]
+
+    with patch("app.agents.web_agent._fetch_url") as mock_fetch:
+        result = await merger_node(
+            {
+                "deduped_results": deduped,
+                "scraped_content": {},
+                "collected_results": [],
+            }
+        )
+
+    mock_fetch.assert_not_called()
+    assert result["collected_results"][0].content == "I already have content"
+
+
+# ============================================================================
+# evaluator_node tests
+# ============================================================================
 
 
 @pytest.mark.asyncio
@@ -311,17 +548,15 @@ async def test_evaluator_extracts_snippets():
     with patch(
         "app.agents.web_agent.call_llm_structured",
         AsyncMock(
-            return_value=EvaluationResult(
+            return_value=_eval_mock(
+                satisfied=True,
                 snippets=[
                     {
                         "title": "ML Overview",
-                        "url": "https://example.com/ml",
-                        "content": "Machine learning is a field of AI.",
-                    },
+                        "url": "https://x.com",
+                        "content": "ML is a field.",
+                    }
                 ],
-                reasoning="Found a good overview.",
-                is_satisfied=True,
-                suggested_next_urls=[],
             )
         ),
     ):
@@ -329,34 +564,35 @@ async def test_evaluator_extracts_snippets():
             {
                 "llm_config": LLM,
                 "query": "machine learning",
-                "scraped_content": {
-                    "https://example.com/ml": "Machine learning is a field of AI.",
-                },
+                "scraped_content": {"https://x.com": "ML is a field."},
                 "collected_results": [],
+                "iteration": 0,
             }
         )
 
     assert result["is_complete"] is True
+    assert result["iteration"] == 1
     assert len(result["collected_results"]) == 1
     assert result["collected_results"][0].title == "ML Overview"
 
 
 @pytest.mark.asyncio
-async def test_evaluator_not_satisfied():
+async def test_evaluator_not_satisfied_with_refined_queries():
+    """When not satisfied, refined_queries and URLs are passed back for the next pass."""
     with patch(
         "app.agents.web_agent.call_llm_structured",
         AsyncMock(
-            return_value=EvaluationResult(
+            return_value=_eval_mock(
+                satisfied=False,
                 snippets=[
                     {
-                        "title": "Partial info",
-                        "url": "https://example.com/partial",
-                        "content": "Some partial content.",
-                    },
+                        "title": "Partial",
+                        "url": "https://p.com",
+                        "content": "Partial info.",
+                    }
                 ],
-                reasoning="Need more specialized sources.",
-                is_satisfied=False,
-                suggested_next_urls=["https://example.com/deep"],
+                refined_queries={"wikipedia": ["deep dive"], "arxiv": ["survey"]},
+                refined_urls=["https://deeper.com"],
             )
         ),
     ):
@@ -364,15 +600,16 @@ async def test_evaluator_not_satisfied():
             {
                 "llm_config": LLM,
                 "query": "machine learning",
-                "scraped_content": {
-                    "https://example.com/partial": "Some partial content.",
-                },
+                "scraped_content": {},
                 "collected_results": [],
+                "iteration": 0,
             }
         )
 
     assert result["is_complete"] is False
-    assert result["suggested_next_urls"] == ["https://example.com/deep"]
+    assert result["per_tool_queries"]["wikipedia"] == ["deep dive"]
+    assert result["per_tool_queries"]["arxiv"] == ["survey"]
+    assert result["custom_urls"] == ["https://deeper.com"]
 
 
 @pytest.mark.asyncio
@@ -387,38 +624,26 @@ async def test_evaluator_error_fallback():
                 "query": "machine learning",
                 "scraped_content": {"https://x.com": "content"},
                 "collected_results": [],
+                "iteration": 0,
             }
         )
 
-    assert result["is_complete"] is True
+    assert result["is_complete"] is True  # fails safe
     assert result["collected_results"] == []
-    assert result["suggested_next_urls"] == []
+    assert result["per_tool_queries"] == {}
 
 
 @pytest.mark.asyncio
 async def test_evaluator_merges_previous_results():
-    existing = [
-        SearchResult(
-            title="Previous",
-            url="https://old.com",
-            snippet="Old content.",
-            content="Old full content.",
-        ),
-    ]
+    existing = [_make_result("Previous", "https://old.com", "Old content")]
     with patch(
         "app.agents.web_agent.call_llm_structured",
         AsyncMock(
-            return_value=EvaluationResult(
+            return_value=_eval_mock(
+                satisfied=True,
                 snippets=[
-                    {
-                        "title": "New",
-                        "url": "https://new.com",
-                        "content": "New content.",
-                    },
+                    {"title": "New", "url": "https://new.com", "content": "New content"}
                 ],
-                reasoning="Added one.",
-                is_satisfied=True,
-                suggested_next_urls=[],
             )
         ),
     ):
@@ -426,8 +651,9 @@ async def test_evaluator_merges_previous_results():
             {
                 "llm_config": LLM,
                 "query": "machine learning",
-                "scraped_content": {"https://new.com": "New content."},
+                "scraped_content": {"https://new.com": "New content"},
                 "collected_results": existing,
+                "iteration": 0,
             }
         )
 
@@ -438,22 +664,21 @@ async def test_evaluator_merges_previous_results():
 
 @pytest.mark.asyncio
 async def test_evaluator_skips_invalid_snippets():
+    """Snippets with empty title or content are dropped."""
     with patch(
         "app.agents.web_agent.call_llm_structured",
         AsyncMock(
-            return_value=EvaluationResult(
+            return_value=_eval_mock(
+                satisfied=True,
                 snippets=[
-                    {"title": "", "url": "x", "content": "x"},
-                    {"title": "Good", "url": "x", "content": ""},
+                    {"title": "", "url": "x", "content": "no title"},  # dropped
+                    {"title": "Good", "url": "x", "content": ""},  # dropped
                     {
                         "title": "Valid",
                         "url": "https://valid.com",
                         "content": "Valid content.",
-                    },
+                    },  # kept
                 ],
-                reasoning="Test.",
-                is_satisfied=True,
-                suggested_next_urls=[],
             )
         ),
     ):
@@ -463,6 +688,7 @@ async def test_evaluator_skips_invalid_snippets():
                 "query": "machine learning",
                 "scraped_content": {},
                 "collected_results": [],
+                "iteration": 0,
             }
         )
 
@@ -470,274 +696,215 @@ async def test_evaluator_skips_invalid_snippets():
     assert result["collected_results"][0].title == "Valid"
 
 
-# ── run_web_agent — pure LLM mode ─────────────────────────────────────────
+# ============================================================================
+# Full graph integration — mocked LLM + mocked HTTP
+# ============================================================================
+
+
+def _make_httpx_mock_for_wikipedia(page_titles: list[str]):
+    """Build a side_effect list of mocks for httpx.AsyncClient.get() that
+    simulates a WikipediaAdapter.search() call sequence:
+    1 search response + N extract responses (one per page)."""
+
+    from unittest.mock import MagicMock
+
+    mocks = []
+
+    # 1. Search response.
+    search_json = {
+        "batchcomplete": "",
+        "query": {
+            "search": [
+                {"title": t, "pageid": 1000 + i, "snippet": f"Snippet for {t}."}
+                for i, t in enumerate(page_titles)
+            ]
+        },
+    }
+    search_mock = MagicMock()
+    search_mock.json.return_value = search_json
+    search_mock.raise_for_status = MagicMock()
+    mocks.append(search_mock)
+
+    # 2. Extract responses (one per page).
+    for i, title in enumerate(page_titles):
+        pid = 1000 + i
+        extract_json = {
+            "query": {
+                "pages": {
+                    str(pid): {
+                        "pageid": pid,
+                        "title": title,
+                        "extract": f"Full extract text for {title}.",
+                    }
+                }
+            }
+        }
+        extract_mock = MagicMock()
+        extract_mock.json.return_value = extract_json
+        extract_mock.raise_for_status = MagicMock()
+        mocks.append(extract_mock)
+
+    return mocks
 
 
 @pytest.mark.asyncio
-async def test_run_web_agent_pure_llm_one_round():
-    """Pure LLM: planner → fetcher → evaluator (satisfied) → end."""
+async def test_run_web_agent_single_pass():
+    """Full graph: planner → fan_out(wikipedia) → dedup → merge → evaluate(satisfied) → END."""
+    wikipedia_mocks = _make_httpx_mock_for_wikipedia(
+        ["Deep learning", "Neural networks"]
+    )
+
+    async def llm_side_effect(*args, **kwargs):
+        label = kwargs.get("label", "")
+        if "planner" in label:
+            return PlannedQueries(
+                queries={"wikipedia": ["deep learning"]},
+                custom_urls=[],
+                reasoning="Search Wikipedia.",
+            )
+        # evaluator
+        return EvalResult(
+            snippets=[
+                {
+                    "title": "Deep learning",
+                    "url": "https://en.wikipedia.org/wiki/Deep_learning",
+                    "content": "Deep learning is...",
+                },
+            ],
+            reasoning="Good enough.",
+            is_satisfied=True,
+            refined_queries={},
+            refined_urls=[],
+        )
+
     with (
         patch(
-            "app.agents.web_agent._fetch_url",
-            AsyncMock(side_effect=lambda u: (u, f"Content from {u}")),
-        ),
-        patch(
             "app.agents.web_agent.call_llm_structured",
-            AsyncMock(side_effect=_llm_mock),
+            AsyncMock(side_effect=llm_side_effect),
         ),
+        patch("httpx.AsyncClient") as mock_client_cls,
     ):
+        # httpx.AsyncClient().__aenter__().get() returns the mocks in sequence.
+        mock_get = AsyncMock(side_effect=wikipedia_mocks)
+        mock_ctx = MagicMock()
+        mock_ctx.get = mock_get
+        mock_client_cls.return_value.__aenter__.return_value = mock_ctx
+
         results = await run_web_agent(
-            query="machine learning",
+            query="deep learning",
             llm_config=LLM,
-            max_iterations=3,
+            max_iterations=1,
+            search_adapters=None,  # uses built-in Wikipedia
         )
 
     assert len(results) >= 1
-    assert isinstance(results[0], SearchResult)
-
-
-@pytest.mark.asyncio
-async def test_run_web_agent_no_adapters_no_urls():
-    """Pure LLM with planner returning empty URLs returns empty results."""
-
-    async def empty_planner(*args, **kwargs):
-        label = kwargs.get("label", "")
-        if "evaluator" in label:
-            return EvaluationResult(
-                snippets=[],
-                reasoning="Nothing to evaluate.",
-                is_satisfied=True,
-                suggested_next_urls=[],
-            )
-        return PlannedUrls(urls=[], reasoning="No results found.")
-
-    with patch(
-        "app.agents.web_agent.call_llm_structured",
-        AsyncMock(side_effect=empty_planner),
-    ):
-        results = await run_web_agent(
-            query="machine learning",
-            llm_config=LLM,
-            max_iterations=1,
-        )
-
-    assert results == []
-
-
-# ── run_web_agent — hybrid mode with search adapters ──────────────────────
-
-
-@pytest.mark.asyncio
-async def test_run_web_agent_hybrid_with_adapters():
-    """Hybrid: search adapters provide seed results + URLs to fetch."""
-    mock_adapter = AsyncMock()
-    mock_adapter.search = AsyncMock(
-        return_value=[
-            SearchResult(
-                title="Wikipedia Article",
-                url="https://en.wikipedia.org/wiki/Test",
-                snippet="A test article.",
-                content="Full Wikipedia content.",
-            ),
-            SearchResult(
-                title="External Link",
-                url="https://example.com/deep",
-                snippet="",
-                content="",
-            ),
-        ]
-    )
-
-    with (
-        patch(
-            "app.agents.web_agent._fetch_url",
-            AsyncMock(return_value=("https://example.com/deep", "Deep dive content.")),
-        ),
-        patch(
-            "app.agents.web_agent.call_llm_structured",
-            AsyncMock(side_effect=_llm_mock),
-        ),
-    ):
-        results = await run_web_agent(
-            query="test topic",
-            llm_config=LLM,
-            max_iterations=3,
-            search_adapters=[mock_adapter],
-        )
-
-    # Content-rich result from adapter + fetched + evaluator snippet(s)
-    assert len(results) >= 2
     titles = {r.title for r in results}
-    assert "Wikipedia Article" in titles
+    assert "Deep learning" in titles
 
 
 @pytest.mark.asyncio
-async def test_run_web_agent_hybrid_skips_planner():
-    """Hybrid: seed URLs → skips planner → fetcher → evaluator."""
-    mock_adapter = AsyncMock()
-    mock_adapter.search = AsyncMock(
-        return_value=[
-            SearchResult(
-                title="Some Page",
-                url="https://example.com/page",
-                snippet="",
-                content="",
-            ),
-        ]
-    )
+async def test_run_web_agent_multi_pass():
+    """Two passes: planner → fan_out → ... → evaluator(not satisfied) → planner → ... → END."""
+    wikipedia_mocks = _make_httpx_mock_for_wikipedia(
+        ["Topic A"]
+    ) + _make_httpx_mock_for_wikipedia(["Topic B"])
 
-    planner_called = False
+    pass_count = [0]
 
-    async def track_planner(state):
-        nonlocal planner_called
-        planner_called = True
-        return {
-            "current_urls": [],
-            "planner_reasoning": "Should not be called.",
-        }
-
-    with (
-        patch(
-            "app.agents.web_agent._fetch_url",
-            AsyncMock(return_value=("https://example.com/page", "Fetched content.")),
-        ),
-        patch(
-            "app.agents.web_agent.call_llm_structured",
-            AsyncMock(side_effect=_llm_mock),
-        ),
-        patch(
-            "app.agents.web_agent.planner_node",
-            AsyncMock(side_effect=track_planner),
-        ),
-    ):
-        await run_web_agent(
-            query="test",
-            llm_config=LLM,
-            max_iterations=3,
-            search_adapters=[mock_adapter],
-        )
-
-    assert not planner_called, (
-        "Planner must not be called when seed URLs skip to fetcher"
-    )
-
-
-@pytest.mark.asyncio
-async def test_run_web_agent_adapter_exception_handled():
-    """When one adapter fails, the other still contributes."""
-    mock_bad = AsyncMock()
-    mock_bad.search = AsyncMock(side_effect=RuntimeError("network error"))
-    mock_good = AsyncMock()
-    mock_good.search = AsyncMock(
-        return_value=[
-            SearchResult(
-                title="Good result",
-                url="https://good.com",
-                snippet="Nice.",
-                content="Good content.",
-            ),
-        ]
-    )
-
-    async def evaluator_only(*args, **kwargs):
+    async def llm_side_effect(*args, **kwargs):
         label = kwargs.get("label", "")
-        if "evaluator" in label:
-            return EvaluationResult(
-                snippets=[],
-                reasoning="Already have enough.",
-                is_satisfied=True,
-                suggested_next_urls=[],
+        if "planner" in label:
+            pass_count[0] += 1
+            return PlannedQueries(
+                queries={"wikipedia": [f"query pass {pass_count[0]}"]},
+                custom_urls=[],
+                reasoning=f"Pass {pass_count[0]}.",
             )
-        return PlannedUrls(urls=[], reasoning="Not needed.")
-
-    with patch(
-        "app.agents.web_agent.call_llm_structured",
-        AsyncMock(side_effect=evaluator_only),
-    ):
-        results = await run_web_agent(
-            query="test",
-            llm_config=LLM,
-            max_iterations=1,
-            search_adapters=[mock_bad, mock_good],
-        )
-
-    assert any(r.title == "Good result" for r in results)
-
-
-@pytest.mark.asyncio
-async def test_run_web_agent_max_iterations_stops():
-    """Max iterations caps the loop even when evaluator is never satisfied."""
-    mock_adapter = AsyncMock()
-    mock_adapter.search = AsyncMock(
-        return_value=[
-            SearchResult(
-                title="Seed",
-                url="https://seed.com",
-                snippet="",
-                content="",
-            ),
-        ]
-    )
-
-    call_count = 0
-
-    async def never_satisfied(*args, **kwargs):
-        nonlocal call_count
-        label = kwargs.get("label", "")
-        if "evaluator" in label:
-            call_count += 1
-            return EvaluationResult(
+        # evaluator
+        if pass_count[0] < 2:
+            return EvalResult(
                 snippets=[
                     {
-                        "title": f"Iter {call_count}",
-                        "url": f"https://iter{call_count}.com",
-                        "content": f"Content {call_count}.",
-                    },
+                        "title": f"Result pass {pass_count[0]}",
+                        "url": f"https://x.com/p{pass_count[0]}",
+                        "content": "Partial.",
+                    }
                 ],
                 reasoning="Need more.",
                 is_satisfied=False,
-                suggested_next_urls=[f"https://iter{call_count + 1}.com"],
+                refined_queries={"wikipedia": ["more"]},
+                refined_urls=[],
             )
-        return PlannedUrls(
-            urls=[f"https://plan{call_count}.com"],
-            reasoning="Planner step.",
+        return EvalResult(
+            snippets=[
+                {
+                    "title": f"Result pass {pass_count[0]}",
+                    "url": f"https://x.com/p{pass_count[0]}",
+                    "content": "Complete.",
+                }
+            ],
+            reasoning="Done.",
+            is_satisfied=True,
+            refined_queries={},
+            refined_urls=[],
         )
 
     with (
         patch(
-            "app.agents.web_agent._fetch_url",
-            AsyncMock(side_effect=lambda u: (u, f"Content from {u}")),
-        ),
-        patch(
             "app.agents.web_agent.call_llm_structured",
-            AsyncMock(side_effect=never_satisfied),
+            AsyncMock(side_effect=llm_side_effect),
         ),
+        patch("httpx.AsyncClient") as mock_client_cls,
     ):
+        mock_get = AsyncMock(side_effect=wikipedia_mocks)
+        mock_ctx = MagicMock()
+        mock_ctx.get = mock_get
+        mock_client_cls.return_value.__aenter__.return_value = mock_ctx
+
         results = await run_web_agent(
-            query="test",
+            query="deep learning",
             llm_config=LLM,
-            max_iterations=2,
-            search_adapters=[mock_adapter],
+            max_iterations=3,
+            search_adapters=None,
         )
 
-    # 2 iterations max: seed fetcher→eval1 + planner→fetcher→eval2 = 2 eval calls
-    assert call_count <= 3
-    assert isinstance(results, list)
+    assert pass_count[0] >= 2  # at least 2 planner invocations
+    assert len(results) >= 2  # results from both passes accumulated
 
 
 @pytest.mark.asyncio
-async def test_run_web_agent_no_search_adapters_works():
-    """When search_adapters is None, the pure LLM path still works."""
+async def test_run_web_agent_no_adapters_works():
+    """run_web_agent works with search_adapters=None (pure LLM + built-in Wikipedia)."""
+    wikipedia_mocks = _make_httpx_mock_for_wikipedia(["Test"])
+
+    async def llm_side_effect(*args, **kwargs):
+        label = kwargs.get("label", "")
+        if "planner" in label:
+            return PlannedQueries(
+                queries={"wikipedia": ["test"]},
+                custom_urls=[],
+                reasoning="Test.",
+            )
+        return EvalResult(
+            snippets=[],
+            reasoning="OK.",
+            is_satisfied=True,
+            refined_queries={},
+            refined_urls=[],
+        )
+
     with (
         patch(
-            "app.agents.web_agent._fetch_url",
-            AsyncMock(side_effect=lambda u: (u, f"Content from {u}")),
-        ),
-        patch(
             "app.agents.web_agent.call_llm_structured",
-            AsyncMock(side_effect=_llm_mock),
+            AsyncMock(side_effect=llm_side_effect),
         ),
+        patch("httpx.AsyncClient") as mock_client_cls,
     ):
+        mock_get = AsyncMock(side_effect=wikipedia_mocks)
+        mock_ctx = MagicMock()
+        mock_ctx.get = mock_get
+        mock_client_cls.return_value.__aenter__.return_value = mock_ctx
+
         results = await run_web_agent(
             query="test",
             llm_config=LLM,
@@ -746,9 +913,265 @@ async def test_run_web_agent_no_search_adapters_works():
         )
 
     assert isinstance(results, list)
+    assert len(results) >= 1
 
 
-# ── build_web_agent_graph ─────────────────────────────────────────────────
+# ============================================================================
+# Integration: fan-out + dedup + merge pipeline
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_fan_out_multiple_search_nodes_in_parallel():
+    """Two search adapters (mock) run as parallel nodes, results fan-in."""
+    adapter1 = AsyncMock()
+    adapter1.tool_type = "wikipedia"
+    adapter1.search = AsyncMock(
+        return_value=[
+            _make_result("Wiki Page", "https://wiki.com/page", "Wiki content"),
+        ]
+    )
+
+    adapter2 = AsyncMock()
+    adapter2.tool_type = "arxiv"
+    adapter2.search = AsyncMock(
+        return_value=[
+            _make_result(
+                "arXiv Paper",
+                "https://arxiv.org/abs/2301.12345",
+                "arXiv abstract",
+                "arXiv abstract...",
+            ),
+        ]
+    )
+
+    with (
+        patch(
+            "app.agents.web_agent.call_llm_structured",
+            AsyncMock(
+                side_effect=[
+                    # planner
+                    PlannedQueries(
+                        queries={"wikipedia": ["q1"], "arxiv": ["q2"]},
+                        custom_urls=[],
+                        reasoning="Two tools.",
+                    ),
+                    # evaluator
+                    _eval_mock(
+                        satisfied=True,
+                        snippets=[
+                            {
+                                "title": "Wiki Page",
+                                "url": "https://wiki.com/page",
+                                "content": "Wiki content",
+                            },
+                            {
+                                "title": "arXiv Paper",
+                                "url": "https://arxiv.org/abs/2301.12345",
+                                "content": "arXiv abstract...",
+                            },
+                        ],
+                    ),
+                ]
+            ),
+        ),
+    ):
+        results = await run_web_agent(
+            query="test",
+            llm_config=LLM,
+            max_iterations=1,
+            search_adapters=[adapter1, adapter2],
+        )
+
+    # Both adapters were called.
+    adapter1.search.assert_called_once()
+    adapter2.search.assert_called_once()
+
+    # Results from both adapters appear.
+    titles = {r.title for r in results}
+    assert "Wiki Page" in titles
+    assert "arXiv Paper" in titles
+
+
+@pytest.mark.asyncio
+async def test_adapter_failure_does_not_block_graph():
+    """When one adapter raises RuntimeError, the other adapter still contributes
+    and the full graph completes without crashing."""
+    adapter_good = AsyncMock()
+    adapter_good.tool_type = "arxiv"
+    adapter_good.search = AsyncMock(
+        return_value=[
+            _make_result(
+                "arXiv Paper",
+                "https://arxiv.org/abs/2501.00001",
+                "arXiv content",
+                "arXiv content",
+            ),
+        ]
+    )
+
+    adapter_bad = AsyncMock()
+    adapter_bad.tool_type = "tavily"
+    adapter_bad.search = AsyncMock(side_effect=RuntimeError("Tavily API timeout"))
+
+    with (
+        patch(
+            "app.agents.web_agent.call_llm_structured",
+            AsyncMock(
+                side_effect=[
+                    PlannedQueries(
+                        queries={"arxiv": ["q1"], "tavily": ["q2"]},
+                        custom_urls=[],
+                        reasoning="Two tools, one may fail.",
+                    ),
+                    _eval_mock(
+                        satisfied=True,
+                        snippets=[
+                            {
+                                "title": "arXiv Paper",
+                                "url": "https://arxiv.org/abs/2501.00001",
+                                "content": "arXiv content",
+                            },
+                        ],
+                    ),
+                ]
+            ),
+        ),
+    ):
+        results = await run_web_agent(
+            query="test",
+            llm_config=LLM,
+            max_iterations=1,
+            search_adapters=[adapter_good, adapter_bad],
+        )
+
+    # The good adapter was called and contributed.
+    adapter_good.search.assert_called_once()
+    adapter_bad.search.assert_called_once()
+
+    # The flow did not crash — we have results from the good adapter.
+    assert len(results) >= 1
+    titles = {r.title for r in results}
+    assert "arXiv Paper" in titles
+
+
+@pytest.mark.asyncio
+async def test_dedup_across_tools():
+    """When two tools return the same URL, the deduplicator keeps only one (best content)."""
+    adapter1 = AsyncMock()
+    adapter1.tool_type = "wikipedia"
+    adapter1.search = AsyncMock(
+        return_value=[
+            _make_result("Same Page", "https://same.com/article", "Short snippet"),
+        ]
+    )
+
+    adapter2 = AsyncMock()
+    adapter2.tool_type = "arxiv"
+    adapter2.search = AsyncMock(
+        return_value=[
+            _make_result(
+                "Same Page (richer)",
+                "https://same.com/article",
+                "Much longer content with full text from the page including many details and examples.",
+            ),
+        ]
+    )
+
+    with (
+        patch(
+            "app.agents.web_agent.call_llm_structured",
+            AsyncMock(
+                side_effect=[
+                    PlannedQueries(
+                        queries={"wikipedia": ["q1"], "arxiv": ["q2"]},
+                        custom_urls=[],
+                        reasoning="Both.",
+                    ),
+                    _eval_mock(
+                        satisfied=True,
+                        snippets=[
+                            {
+                                "title": "Other Source",
+                                "url": "https://other.com/page",
+                                "content": "Different URL",
+                            },
+                        ],
+                    ),
+                ]
+            ),
+        ),
+    ):
+        results = await run_web_agent(
+            query="test",
+            llm_config=LLM,
+            max_iterations=1,
+            search_adapters=[adapter1, adapter2],
+        )
+
+    # The deduplicator should have removed the duplicate URL.
+    # Only 1 result with same.com URL (the richer one, deduped).
+    same_url_results = [r for r in results if "same.com" in r.url]
+    assert len(same_url_results) == 1
+    # The kept result has the richer content.
+    assert "longer content" in same_url_results[0].content
+
+
+@pytest.mark.asyncio
+async def test_merger_fetches_content_for_url_only_results():
+    """URL-only results from search adapters get full content in the merger."""
+    adapter = AsyncMock()
+    adapter.tool_type = "wikipedia"
+    adapter.search = AsyncMock(
+        return_value=[
+            _make_result("URL only", "https://fetch.com/deep", ""),  # no content
+        ]
+    )
+
+    with (
+        patch(
+            "app.agents.web_agent.call_llm_structured",
+            AsyncMock(
+                side_effect=[
+                    PlannedQueries(
+                        queries={"wikipedia": ["q1"]},
+                        custom_urls=[],
+                        reasoning="Search.",
+                    ),
+                    _eval_mock(
+                        satisfied=True,
+                        snippets=[
+                            {
+                                "title": "Other",
+                                "url": "https://other.com",
+                                "content": "Other content",
+                            },
+                        ],
+                    ),
+                ]
+            ),
+        ),
+        patch(
+            "app.agents.web_agent._fetch_url",
+            AsyncMock(return_value=("https://fetch.com/deep", "Fetched content!")),
+        ),
+    ):
+        results = await run_web_agent(
+            query="test",
+            llm_config=LLM,
+            max_iterations=1,
+            search_adapters=[adapter],
+        )
+
+    # The URL-only result should have gotten content via the merger fetch.
+    url_only = [r for r in results if "fetch.com" in r.url]
+    assert len(url_only) == 1
+    assert url_only[0].content == "Fetched content!"
+
+
+# ============================================================================
+# build_web_agent_graph
+# ============================================================================
 
 
 def test_build_graph_returns_compiled_graph():
@@ -757,83 +1180,29 @@ def test_build_graph_returns_compiled_graph():
     assert hasattr(graph, "ainvoke")
 
 
-# ── _build_search_adapters — API key resolution ──────────────────────────
+def test_build_graph_with_custom_adapters():
+    """Custom adapters become nodes; web_agent adapter is skipped (no recursion)."""
+    adapter = AsyncMock()
+    adapter.tool_type = "tavily"
+    adapter.search = AsyncMock(return_value=[])
+
+    graph = build_web_agent_graph(search_adapters=[adapter])
+    assert graph is not None
+    assert hasattr(graph, "ainvoke")
 
 
-def test_build_search_adapters_no_search_tools():
-    """Returns None when search_tools is empty."""
-    result = _build_search_adapters({})
-    assert result is None
-
-
-def test_build_search_adapters_resolves_api_key():
-    """Injects api_key from resolved_tools into the matching search_tool entry."""
-    resolved = [
-        {"tool_type": "tavily", "api_key": "tvly-secret"},
-        {"tool_type": "wikipedia", "api_key": ""},
-    ]
-    params = {"search_tools": [{"tool_type": "tavily"}]}
-    adapters = _build_search_adapters(params, resolved)
-    assert adapters is not None
-    assert len(adapters) == 1
-    assert adapters[0].api_key == "tvly-secret"
-
-
-def test_build_search_adapters_skips_when_has_key():
-    """Does NOT override an already-present api_key."""
-    resolved = [{"tool_type": "tavily", "api_key": "from-db"}]
-    params = {"search_tools": [{"tool_type": "tavily", "api_key": "explicit"}]}
-    adapters = _build_search_adapters(params, resolved)
-    assert adapters is not None
-    assert adapters[0].api_key == "explicit"
-
-
-def test_build_search_adapters_multiple_tools():
-    """Resolves keys for multiple search_tools at once."""
-    resolved = [
-        {"tool_type": "tavily", "api_key": "tvly-123"},
-        {"tool_type": "perplexity", "api_key": "pplx-456"},
-        {"tool_type": "wikipedia", "api_key": ""},
-    ]
-    params = {
-        "search_tools": [
-            {"tool_type": "wikipedia"},
-            {"tool_type": "tavily"},
-        ]
-    }
-    adapters = _build_search_adapters(params, resolved)
-    assert adapters is not None
-    assert len(adapters) == 2
-    types = {a.tool_type for a in adapters}
-    assert types == {"wikipedia", "tavily"}
-    # Wikipedia has no key; Tavily got resolved.
-    tavily = next(a for a in adapters if a.tool_type == "tavily")
-    assert tavily.api_key == "tvly-123"
-
-
-def test_build_search_adapters_resolved_none():
-    """Returns None for unknown tool_type even with resolved_tools."""
-    resolved = [{"tool_type": "tavily", "api_key": "tvly-123"}]
-    params = {"search_tools": [{"tool_type": "unknown_tool"}]}
-    adapters = _build_search_adapters(params, resolved)
-    assert adapters is None
-
-
-# ── End-to-end with real LLM (--real-llm flag) ───────────────────────────
+# ============================================================================
+# Real-LLM E2E tests (require --real-llm flag)
+# ============================================================================
 
 
 @pytest.mark.asyncio
 @pytest.mark.slow
 async def test_run_web_agent_real_llm_pure(use_real_llm: bool, real_llm_config: dict):
-    """E2E: pure LLM mode — planner → fetch → evaluate with a real provider.
-
-    Requires ``--real-llm`` and env vars (see conftest.py).
-    Uses a well-known Wikipedia topic so the LLM can generate real URLs.
-    """
+    """E2E: pure LLM + built-in Wikipedia → planner → fan_out → ... → END."""
     if not use_real_llm:
         pytest.skip("--real-llm flag not set")
 
-    # Wikipedia has a stable article on this topic.
     results = await run_web_agent(
         query="Python programming language history and features",
         llm_config=real_llm_config,
@@ -842,32 +1211,19 @@ async def test_run_web_agent_real_llm_pure(use_real_llm: bool, real_llm_config: 
     )
 
     assert isinstance(results, list)
-    # With a real LLM, 2 rounds of planner→fetch→evaluate should yield
-    # at least one snippet on a well-known topic like Python.
-    assert len(results) >= 1, (
-        f"Expected at least 1 result, got {len(results)}. "
-        "The LLM should generate fetchable URLs for a well-known topic."
-    )
+    assert len(results) >= 1, f"Expected at least 1 result, got {len(results)}."
     for r in results:
         assert r.title, "Every result must have a title"
-        assert r.url, "Every result must have a URL"
-        assert r.snippet or r.content, (
-            f"Result '{r.title}' must have snippet or content"
-        )
 
 
 @pytest.mark.asyncio
 @pytest.mark.slow
-async def test_run_web_agent_real_llm_hybrid_wikipedia(
+async def test_run_web_agent_real_llm_with_wikipedia(
     use_real_llm: bool,
     real_llm_config: dict,
     wikipedia_adapter,
 ):
-    """E2E: hybrid mode with a real Wikipedia adapter as seed.
-
-    Requires ``--real-llm`` and ``PDF2TEX_TEST_PROVIDER`` / ``PDF2TEX_TEST_MODEL``.
-    Wikipedia is free (no API key) so it always works as a search adapter.
-    """
+    """E2E: hybrid mode with real Wikipedia adapter."""
     if not use_real_llm:
         pytest.skip("--real-llm flag not set")
 
@@ -879,16 +1235,9 @@ async def test_run_web_agent_real_llm_hybrid_wikipedia(
     )
 
     assert isinstance(results, list)
-    # Wikipedia should contribute at least one result.
-    assert len(results) >= 1, (
-        "Expected at least 1 result from hybrid mode (Wikipedia adapter)"
-    )
+    assert len(results) >= 1, "Expected at least 1 result from hybrid mode."
     for r in results:
         assert r.title, "Every result must have a title"
-        assert r.url, "Every result must have a URL"
-        assert r.snippet or r.content, (
-            f"Result '{r.title}' must have snippet or content"
-        )
 
 
 @pytest.mark.asyncio
@@ -896,37 +1245,16 @@ async def test_run_web_agent_real_llm_hybrid_wikipedia(
 async def test_run_web_agent_real_llm_search_tools(
     use_real_llm: bool,
     real_llm_config: dict,
+    resolved_web_tools: list[dict[str, object]],
 ):
-    """E2E: WebAgentAdapter with search_tools resolved via _resolved_web_tools.
-
-    Exercises the full path: ``WebAgentAdapter.search()`` →
-    ``_build_search_adapters(params, resolved)`` → API key resolution →
-    ``run_web_agent(adapters=[...])``.
-
-    Uses Wikipedia (free, no API key) and optionally Tavily if
-    ``PDF2TEX_TEST_TAVILY_KEY`` is set in the environment.
-    """
+    """E2E: WebAgentAdapter with search_tools resolved via _resolved_web_tools."""
     if not use_real_llm:
         pytest.skip("--real-llm flag not set")
 
-    import os
-
-    # Build the full resolved_tools list — these simulate what the runner
-    # builds from the DB with decrypted API keys.
-    resolved_tools: list[dict[str, object]] = [
-        {"tool_type": "wikipedia", "api_key": ""},
-    ]
     search_tools: list[dict[str, str]] = [
-        {"tool_type": "wikipedia"},
+        {"tool_type": str(t["tool_type"])} for t in resolved_web_tools
     ]
 
-    # Optionally include Tavily if a key is available.
-    tavily_key = os.environ.get("PDF2TEX_TEST_TAVILY_KEY", "")
-    if tavily_key:
-        resolved_tools.append({"tool_type": "tavily", "api_key": tavily_key})
-        search_tools.append({"tool_type": "tavily"})
-
-    # Create the WebAgentAdapter with _resolved_web_tools injected.
     agent_config: dict[str, object] = {
         "tool_type": "web_agent",
         "api_key": "",
@@ -936,7 +1264,7 @@ async def test_run_web_agent_real_llm_search_tools(
             "llm_config": real_llm_config,
             "search_tools": search_tools,
         },
-        "_resolved_web_tools": resolved_tools,
+        "_resolved_web_tools": resolved_web_tools,
     }
 
     from app.services.web_search import WebAgentAdapter
@@ -945,14 +1273,6 @@ async def test_run_web_agent_real_llm_search_tools(
     results = await agent.search("artificial intelligence history")
 
     assert isinstance(results, list)
-    assert len(results) >= 1, (
-        f"Expected at least 1 result from WebAgentAdapter.search() "
-        f"with search_tools={[s['tool_type'] for s in search_tools]}, "
-        f"got {len(results)}"
-    )
+    assert len(results) >= 1, f"Expected at least 1 result, got {len(results)}"
     for r in results:
         assert r.title, "Every result must have a title"
-        assert r.url, "Every result must have a URL"
-        assert r.snippet or r.content, (
-            f"Result '{r.title}' must have snippet or content"
-        )

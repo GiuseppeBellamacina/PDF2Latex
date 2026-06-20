@@ -27,6 +27,13 @@ from app.core.logging import get_logger
 
 logger = get_logger("web_search")
 
+# Descriptive User-Agent per Wikimedia's policy:
+# https://meta.wikimedia.org/wiki/User-Agent_policy
+USER_AGENT = "PDF2LaTeX/1.0 (https://github.com/PDF2LaTeX)"
+
+# Compiled regex for stripping arXiv version suffix (e.g. 2301.12345v2 → 2301.12345).
+ARXIV_ID_RE = re.compile(r"(\d{4}\.\d{4,5})")
+
 
 def strip_html(text: str) -> str:
     """Crude HTML-to-text conversion shared by adapters."""
@@ -56,6 +63,11 @@ class SearchResult:
     snippet: str
     # Full page content when available (after fetch/extract step).
     content: str = ""
+    # Citation metadata (populated by Arxiv, Perplexity, or evaluator).
+    # When set, these flow through to the bibliography as \cite entries.
+    authors: str = ""
+    year: str = ""
+    venue: str = ""  # arXiv ID, journal name, or domain
 
 
 # --------------------------------------------------------------------------- #
@@ -87,7 +99,7 @@ class WebSearchAdapter:
         """
         try:
             async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(url, headers={"User-Agent": "PDF2LaTeX/1.0"})
+                resp = await client.get(url, headers={"User-Agent": USER_AGENT})
                 resp.raise_for_status()
                 text = resp.text
                 text = strip_html(text)
@@ -106,7 +118,7 @@ class WebSearchAdapter:
 class TavilyAdapter(WebSearchAdapter):
     """Tavily Search API — uses the official ``tavily-python`` SDK.
 
-    Install: ``uv sync --extra research-tavily``
+    Install: ``uv sync --extra tools``
     Pip:      ``pip install tavily-python``
 
     Supports ``search_depth`` ("basic" | "advanced") and
@@ -125,8 +137,7 @@ class TavilyAdapter(WebSearchAdapter):
             from tavily import TavilyClient  # type: ignore[import-untyped]
         except ImportError:
             logger.error(
-                "tavily-python is not installed. "
-                "Install it with: uv sync --extra research-tavily"
+                "tavily-python is not installed. Install it with: uv sync --extra tools"
             )
             return []
 
@@ -266,7 +277,8 @@ class WikipediaAdapter(WebSearchAdapter):
             "srsearch": query,
         }
 
-        async with httpx.AsyncClient(timeout=15) as client:
+        _headers = {"User-Agent": USER_AGENT + "; research bot"}
+        async with httpx.AsyncClient(timeout=15, headers=_headers) as client:
             resp = await client.get(
                 f"https://{lang}.wikipedia.org/w/api.php", params=params
             )
@@ -314,6 +326,109 @@ class WikipediaAdapter(WebSearchAdapter):
                     url=f"https://{lang}.wikipedia.org/wiki/{quote_plus(title.replace(' ', '_'))}",
                     snippet=page_snippet,
                     content=content,
+                )
+            )
+        return results
+
+
+# --------------------------------------------------------------------------- #
+# Arxiv adapter (free, no API key)                                            #
+# --------------------------------------------------------------------------- #
+
+
+class ArxivAdapter(WebSearchAdapter):
+    """arXiv API (https://info.arxiv.org/help/api — no API key needed).
+
+    Searches arXiv for papers matching the query and returns structured
+    results with full citation metadata (authors, year, arXiv ID, summary).
+    Uses the Atom XML API: ``export.arxiv.org/api/query``.
+    """
+
+    tool_type: ClassVar[str] = "arxiv"
+
+    async def search(self, query: str) -> list[SearchResult]:
+        import xml.etree.ElementTree as ET
+
+        base = "https://export.arxiv.org/api/query"
+        max_res = min(self.max_results + 2, 10)  # +2 for potential bad entries
+        params: dict[str, str] = {
+            "search_query": f"all:{quote_plus(query)}",
+            "start": "0",
+            "max_results": str(max_res),
+            "sortBy": "relevance",
+            "sortOrder": "descending",
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(base, params=params)
+            resp.raise_for_status()
+            xml_text = resp.text
+
+        ns = {
+            "atom": "http://www.w3.org/2005/Atom",
+            "arxiv": "http://arxiv.org/schemas/atom",
+        }
+        root = ET.fromstring(xml_text)
+        entries = root.findall("atom:entry", ns)[: self.max_results]
+
+        results: list[SearchResult] = []
+        for entry in entries:
+            title_el = entry.find("atom:title", ns)
+            title = (
+                (title_el.text or "").strip().replace("\n", " ")
+                if title_el is not None
+                else ""
+            )
+
+            summary_el = entry.find("atom:summary", ns)
+            summary = (
+                (summary_el.text or "").strip().replace("\n", " ")
+                if summary_el is not None
+                else ""
+            )
+
+            # Build the arXiv page URL from the id tag.
+            id_el = entry.find("atom:id", ns)
+            arxiv_id = ""
+            arxiv_url = ""
+            if id_el is not None and id_el.text:
+                arxiv_url = id_el.text.strip()
+                # Typical formats: http://arxiv.org/abs/2301.12345v1  or  http://arxiv.org/abs/cs/0101001
+                # Preserve everything after /abs/ so legacy category prefixes survive.
+                arxiv_id = arxiv_url.split("/abs/")[-1].rstrip("/")
+                # Strip version suffix (v1, v2) for cleaner reference.
+                m = ARXIV_ID_RE.match(arxiv_id)
+                if m:
+                    arxiv_id = m.group(1)
+
+            # Extract authors.
+            authors_els = entry.findall("atom:author", ns)
+            author_names: list[str] = []
+            for a in authors_els:
+                name_el = a.find("atom:name", ns)
+                if name_el is not None and name_el.text:
+                    author_names.append(name_el.text.strip())
+            authors = ", ".join(author_names)
+
+            # Extract year from published date.
+            published_el = entry.find("atom:published", ns)
+            year = ""
+            if published_el is not None and published_el.text:
+                # Format: 2024-07-15T18:00:00Z
+                year = published_el.text.strip()[:4]
+
+            # Venue = "arXiv:ID" format for proper citation.
+            venue = f"arXiv:{arxiv_id}" if arxiv_id else "arXiv"
+
+            results.append(
+                SearchResult(
+                    title=title,
+                    url=arxiv_url or f"https://arxiv.org/abs/{arxiv_id}",
+                    snippet=summary[:500],
+                    content=summary[:8000],
+                    authors=authors,
+                    year=year,
+                    venue=venue,
                 )
             )
         return results
@@ -451,6 +566,7 @@ def get_search_adapter(config: dict[str, Any]) -> WebSearchAdapter | None:
         "tavily": TavilyAdapter,
         "perplexity": PerplexityAdapter,
         "wikipedia": WikipediaAdapter,
+        "arxiv": ArxivAdapter,
         "web_agent": WebAgentAdapter,
     }
     cls = adapters.get(tool_type)

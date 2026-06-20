@@ -75,6 +75,9 @@ export interface Project {
   research_mode: boolean | null;
   web_tool_ids: number[] | null;
   research_max_queries: number | null;
+  web_agent_max_iterations: number | null;
+  web_agent_provider_id: number | null;
+  web_agent_model: string | null;
   user_sources: { authors: string; title: string; year: string; venue: string }[] | null;
   pipeline_config: Record<string, string> | null;
   output_tex_path: string | null;
@@ -107,6 +110,9 @@ export interface ProjectUpdate {
   research_mode?: boolean;
   web_tool_ids?: number[] | null;
   research_max_queries?: number | null;
+  web_agent_max_iterations?: number | null;
+  web_agent_provider_id?: number | null;
+  web_agent_model?: string | null;
   user_sources?: { authors: string; title: string; year: string; venue: string }[] | null;
   pipeline_config?: Record<string, string>;
   source_order?: number[];

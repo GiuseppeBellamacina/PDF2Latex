@@ -194,12 +194,27 @@ async def research_node(state: GraphState) -> dict[str, Any]:
 
     from app.agents.researcher import research_topic
 
-    analyses = await research_topic(
+    analyses, raw_results = await research_topic(
         topic=topic,
         language=language,
         llm_config=llm_config,
         web_tool_configs=web_tool_configs,
     )
+
+    # Emit raw search results for the front-end preview.
+    if raw_results:
+        await _emit(
+            state,
+            {
+                "stage": "researching",
+                "node": "research",
+                "action": "research_results",
+                "message": f"Trovate {len(raw_results)} fonti web",
+                "progress": 18,
+                "level": "success",
+                "research_results": raw_results,
+            },
+        )
 
     if not analyses:
         await _emit(

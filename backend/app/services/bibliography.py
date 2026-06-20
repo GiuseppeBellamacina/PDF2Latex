@@ -16,7 +16,7 @@ import re
 from typing import Any
 
 # A reference as carried through the pipeline / stored in ``references_pool``:
-#   {key, source_filename, authors, title, year, venue}
+#   {key, source_filename, authors, title, year, venue, url?}
 Reference = dict[str, str]
 
 
@@ -108,6 +108,10 @@ def consolidate_references(
                 "year": year,
                 "venue": venue,
             }
+            # Preserve the source URL (web research) so citations can link back.
+            url_val = str(raw.get("url", "")).strip()
+            if url_val:
+                ref["url"] = url_val
             ref["key"] = make_key(ref, used_keys)
             seen[dedup] = ref
             pool.append(ref)
@@ -131,6 +135,9 @@ def bibtex_entry(ref: Reference) -> str:
         fields.append(f"  journal = {{{venue}}}")
     if year:
         fields.append(f"  year = {{{year}}}")
+    url = ref.get("url", "").strip()
+    if url:
+        fields.append(f"  url = {{{url}}}")
     entry_type = "article" if venue and year else "misc"
     return f"@{entry_type}{{{key},\n" + ",\n".join(fields) + "\n}"
 

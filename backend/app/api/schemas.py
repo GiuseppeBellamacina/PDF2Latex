@@ -30,6 +30,8 @@ class ProviderUpdate(BaseModel):
 
 
 class ProviderOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     provider_type: str
@@ -38,9 +40,6 @@ class ProviderOut(BaseModel):
     params: dict[str, Any] | None
     is_active: bool
     has_api_key: bool
-
-    class Config:
-        from_attributes = True
 
 
 class ProviderTestRequest(BaseModel):
@@ -70,6 +69,8 @@ class WebToolUpdate(BaseModel):
 
 
 class WebToolOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     name: str
     tool_type: str
@@ -78,23 +79,21 @@ class WebToolOut(BaseModel):
     is_active: bool
     has_api_key: bool
 
-    class Config:
-        from_attributes = True
-
 
 # --------------------------- Projects -------------------------------------- #
 class SourceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     filename: str
     n_pages: int
     order_index: int
     source_type: str = "pdf"
 
-    class Config:
-        from_attributes = True
-
 
 class FigureOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     source_filename: str | None
     rel_path: str
@@ -108,11 +107,10 @@ class FigureOut(BaseModel):
     target_section_title: str | None = None
     custom_caption: str | None = None
 
-    class Config:
-        from_attributes = True
-
 
 class SectionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     part_title: str | None
     title: str
@@ -121,9 +119,6 @@ class SectionOut(BaseModel):
     latex: str | None
     has_undo: bool = False
     has_source: bool = False
-
-    class Config:
-        from_attributes = True
 
 
 class SectionRefineRequest(BaseModel):
@@ -187,6 +182,9 @@ class ProjectUpdate(BaseModel):
     research_mode: bool | None = None
     web_tool_ids: list[int] | None = None
     research_max_queries: int | None = None
+    web_agent_max_iterations: int | None = None
+    web_agent_provider_id: int | None = None
+    web_agent_model: str | None = None
     # User-provided bibliographic sources (JSON array of structured refs).
     user_sources: list[dict[str, str]] | None = None
     # LaTeX document template
@@ -223,6 +221,9 @@ class ProjectOut(BaseModel):
     research_mode: bool | None = None
     web_tool_ids: list[int] | None = None
     research_max_queries: int | None = None
+    web_agent_max_iterations: int | None = None
+    web_agent_provider_id: int | None = None
+    web_agent_model: str | None = None
     user_sources: list[dict[str, str]] | None = None
     pipeline_config: dict[str, str] | None = None
     output_tex_path: str | None

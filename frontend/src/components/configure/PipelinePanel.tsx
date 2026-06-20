@@ -4,24 +4,50 @@ import PipelineBuilder from "../PipelineBuilder";
 import SourceReorder from "../SourceReorder";
 import type { Source } from "../../lib/api";
 
-const PRESETS: { label: string; icon: typeof Zap; desc: string; config: Record<string, string> }[] = [
+const PRESETS: {
+  label: string;
+  icon: typeof Zap;
+  desc: string;
+  config: Record<string, string>;
+}[] = [
   {
     label: "Fast",
     icon: Zap,
     desc: "PyMuPDF text + figures only. Fastest extraction.",
-    config: { text: "pymupdf", structure: "none", ocr: "none", math: "none", figures: "pymupdf", figure_scoring: "heuristic" },
+    config: {
+      text: "pymupdf",
+      structure: "none",
+      ocr: "none",
+      math: "none",
+      figures: "pymupdf",
+      figure_scoring: "heuristic",
+    },
   },
   {
     label: "Recommended",
     icon: Sparkles,
-    desc: "Docling structure + PyMuPDF figures + OCR fallback.",
-    config: { text: "pymupdf", structure: "docling", ocr: "tesseract", math: "none", figures: "pymupdf", figure_scoring: "heuristic" },
+    desc: "Docling structure + OCR-assisted figure scoring + OCR fallback.",
+    config: {
+      text: "pymupdf",
+      structure: "docling",
+      ocr: "tesseract",
+      math: "none",
+      figures: "pymupdf",
+      figure_scoring: "ocr_assisted",
+    },
   },
   {
     label: "Scientific",
     icon: Microscope,
-    desc: "Recommended + Nougat math recovery. Best for papers.",
-    config: { text: "pymupdf", structure: "docling", ocr: "tesseract", math: "nougat", figures: "pymupdf", figure_scoring: "heuristic" },
+    desc: "Recommended + pix2tex math + OCR-assisted figure scoring. Best for papers.",
+    config: {
+      text: "pymupdf",
+      structure: "docling",
+      ocr: "rapidocr",
+      math: "pix2tex",
+      figures: "pymupdf",
+      figure_scoring: "ocr_assisted",
+    },
   },
 ];
 
@@ -61,7 +87,10 @@ export default function PipelinePanel({
   );
 
   const activeTools = useMemo(
-    () => Object.entries(pipelineConfig).filter(([, v]) => v && v !== "none").map(([k, v]) => `${k}:${v}`),
+    () =>
+      Object.entries(pipelineConfig)
+        .filter(([, v]) => v && v !== "none")
+        .map(([k, v]) => `${k}:${v}`),
     [pipelineConfig],
   );
 
@@ -71,17 +100,22 @@ export default function PipelinePanel({
         <span className="rounded-lg bg-ink-100 p-1.5 text-ink-500 dark:bg-ink-800 dark:text-ink-400">
           <Layers size={16} />
         </span>
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-400">Extraction Pipeline</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-400">
+          Extraction Pipeline
+        </h2>
       </div>
 
       {/* Presets */}
       <div>
         <p className="mb-3 text-xs text-ink-500">
-          Pick a preset or customize each stage below. Disabled tools are not installed — the install command is shown.
+          Choose a preset or customize each stage. Unavailable tools show an
+          install hint.
         </p>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
           {PRESETS.map((preset) => {
-            const isActive = Object.keys(preset.config).every((k) => pipelineConfig[k] === preset.config[k]);
+            const isActive = Object.keys(preset.config).every(
+              (k) => pipelineConfig[k] === preset.config[k],
+            );
             const isAnim = animatingPreset === preset.label;
             return (
               <button
@@ -97,7 +131,9 @@ export default function PipelinePanel({
                 <span
                   onAnimationEnd={() => setAnimatingPreset(null)}
                   className={`mt-0.5 shrink-0 rounded-lg p-1.5 transition-colors duration-200 ${
-                    isActive ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400" : "bg-ink-100 text-ink-500 dark:bg-ink-800"
+                    isActive
+                      ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+                      : "bg-ink-100 text-ink-500 dark:bg-ink-800"
                   } ${isAnim ? "animate-preset-pop" : ""}`}
                 >
                   <preset.icon size={16} />
@@ -115,14 +151,20 @@ export default function PipelinePanel({
       {/* Active tools summary pills */}
       <div className="flex flex-wrap items-center gap-1.5">
         {activeTools.map((t) => (
-          <span key={t} className="rounded-full bg-ink-100 px-2 py-0.5 text-[11px] text-ink-600 dark:bg-ink-800 dark:text-ink-400">
+          <span
+            key={t}
+            className="rounded-full bg-ink-100 px-2 py-0.5 text-[11px] text-ink-600 dark:bg-ink-800 dark:text-ink-400"
+          >
             {t}
           </span>
         ))}
       </div>
 
       {/* Pipeline builder with collapsible stages */}
-      <div ref={pipelineRef} className="border-t border-ink-200/60 pt-4 dark:border-ink-700/60">
+      <div
+        ref={pipelineRef}
+        className="border-t border-ink-200/60 pt-4 dark:border-ink-700/60"
+      >
         <PipelineBuilder
           projectKey={projectId}
           value={pipelineConfig}
@@ -134,7 +176,7 @@ export default function PipelinePanel({
       <div className="border-t border-ink-200/60 pt-5 dark:border-ink-700/60">
         <h3 className="mb-3 text-sm font-medium">PDF extraction order</h3>
         <p className="mb-3 text-xs text-ink-500">
-          Drag rows to reorder — this determines how contents are merged into the final document.
+          Drag to reorder — earlier PDFs take priority.
         </p>
         <SourceReorder sources={orderedSources} onReorder={setOrderedSources} />
       </div>

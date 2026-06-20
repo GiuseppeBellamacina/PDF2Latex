@@ -72,20 +72,32 @@
     100% { opacity: 0; transform: scale(2.5); }
   }
 
-  /* Particle flow along active edges (data-flow effect) */
-  @keyframes particle-flow {
-    0% { offset-distance: 0%; opacity: 0; }
-    8% { opacity: 1; }
-    92% { opacity: 1; }
-    100% { offset-distance: 100%; opacity: 0; }
+  /* ── Node-specific animations ────────────────────────────────────────── */
+
+  /* Active node: breathing glow */
+  @keyframes node-active-glow {
+    0%, 100% { filter: drop-shadow(0 0 6px rgba(16, 185, 129, 0.45)); }
+    50% { filter: drop-shadow(0 0 14px rgba(16, 185, 129, 0.7)); }
   }
 
-  /* Glowing trail behind each particle */
-  @keyframes particle-trail {
-    0% { offset-distance: 0%; opacity: 0; }
-    4% { opacity: 0.35; }
-    90% { opacity: 0.35; }
-    100% { offset-distance: 100%; opacity: 0; }
+  /* Completed node: satisfying scale-pop (one-shot) */
+  @keyframes node-complete-pop {
+    0% { transform: scale(0.92); }
+    35% { transform: scale(1.08); }
+    60% { transform: scale(0.97); }
+    80% { transform: scale(1.02); }
+    100% { transform: scale(1); }
+  }
+
+  /* Error node: subtle shake */
+  @keyframes node-error-shake {
+    0%, 100% { transform: translateX(0); }
+    15% { transform: translateX(-4px); }
+    30% { transform: translateX(4px); }
+    45% { transform: translateX(-3px); }
+    60% { transform: translateX(3px); }
+    75% { transform: translateX(-1px); }
+    85% { transform: translateX(1px); }
   }
 
   .animate-preset-pop {
@@ -117,69 +129,18 @@
     transform-origin: center;
   }
 
-  .animate-particle {
-    animation: particle-flow 1.8s linear infinite;
-    offset-distance: 0%;
+  .animate-node-active-glow {
+    animation: node-active-glow 2s ease-in-out infinite;
   }
 
-  .animate-particle-trail {
-    animation: particle-trail 1.8s linear infinite;
-    offset-distance: 0%;
+  .animate-node-complete-pop {
+    animation: node-complete-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
   }
 
-  /* ── Spark burst at edge destination (when particle arrives) ────────── */
-
-  @keyframes spark-0 {
-    0% { transform: translate(0, 0) scale(0.2); opacity: 1; }
-    100% { transform: translate(0, -13px) scale(1.1); opacity: 0; }
-  }
-  @keyframes spark-60 {
-    0% { transform: translate(0, 0) scale(0.2); opacity: 1; }
-    100% { transform: translate(11px, -6px) scale(1.1); opacity: 0; }
-  }
-  @keyframes spark-120 {
-    0% { transform: translate(0, 0) scale(0.2); opacity: 1; }
-    100% { transform: translate(11px, 6px) scale(1.1); opacity: 0; }
-  }
-  @keyframes spark-180 {
-    0% { transform: translate(0, 0) scale(0.2); opacity: 1; }
-    100% { transform: translate(0, 13px) scale(1.1); opacity: 0; }
-  }
-  @keyframes spark-240 {
-    0% { transform: translate(0, 0) scale(0.2); opacity: 1; }
-    100% { transform: translate(-11px, 6px) scale(1.1); opacity: 0; }
-  }
-  @keyframes spark-300 {
-    0% { transform: translate(0, 0) scale(0.2); opacity: 1; }
-    100% { transform: translate(-11px, -6px) scale(1.1); opacity: 0; }
+  .animate-node-error-shake {
+    animation: node-error-shake 0.55s ease-in-out;
   }
 
-  /* Central flash: pops in place without drifting */
-  @keyframes spark-flash {
-    0% { transform: scale(0.2); opacity: 0.9; }
-    100% { transform: scale(2.2); opacity: 0; }
-  }
-
-  /* ── Node state-entry pop (pending → active / active → done) ────────── */
-
-  @keyframes node-enter {
-    0% { transform: scale(0.92); }
-    40% { transform: scale(1.06); }
-    70% { transform: scale(0.98); }
-    100% { transform: scale(1); }
-  }
-
-  .animate-node-enter {
-    animation: node-enter 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
-  }
-
-  .animate-spark-0  { animation: spark-0   0.65s ease-out infinite; }
-  .animate-spark-60 { animation: spark-60  0.65s ease-out infinite; }
-  .animate-spark-120{ animation: spark-120 0.65s ease-out infinite; }
-  .animate-spark-180{ animation: spark-180 0.65s ease-out infinite; }
-  .animate-spark-240{ animation: spark-240 0.65s ease-out infinite; }
-  .animate-spark-300{ animation: spark-300 0.65s ease-out infinite; }
-  .animate-spark-flash{ animation: spark-flash 0.45s ease-out infinite; }
 }
 
 @layer components {

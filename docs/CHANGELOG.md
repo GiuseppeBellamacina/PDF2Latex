@@ -1,4 +1,67 @@
-# CHANGELOG — Sessione 2025-06-18
+# CHANGELOG
+
+## Sessione 2025-06-20
+
+### 🧪 Test Sandbox (17 test con asset reali)
+
+Convertiti i 5 script standalone `sandbox/test_*.py` in veri test pytest con
+`@pytest.mark.sandbox` e asset reali (`tests/assets/test.png`, `tests/assets/test.pdf`).
+
+**File creati**:
+- `backend/tests/test_sandbox.py` — 17 test: 5 OCR + 2 math + 3 structure + 5 web + 2 LLM
+- `backend/tests/assets/test.png` / `backend/tests/assets/test.pdf` — asset reali
+
+**Test network**: `@pytest.mark.network` + `@pytest.mark.slow` per Wikipedia, Tavily,
+Perplexity, Web Agent, LLM reale. Skip automatico se env var non configurate.
+
+**File rimossi**: `sandbox/test_ocr.py`, `sandbox/test_math.py`, `sandbox/test_structure.py`,
+`sandbox/test_web_tools.py`, `sandbox/test_llm_providers.py`
+
+### 📄 Report Markdown automatico per test sandbox
+
+Plugin pytest in `conftest.py` che genera `report-sandbox.md` al termine della sessione
+con tabella per categoria, status, durata, stdout/stderr, warning ed errori.
+
+**Hook**: `pytest_warning_recorded`, `pytest_runtest_makereport`, `pytest_sessionfinish`,
+`pytest_runtest_logstart`, `pytest_sessionstart`.
+
+### 🔧 Fix motori/structure
+
+| Engine | Errore | Fix |
+|--------|--------|-----|
+| **docling** | Output vuoto | Sostituito `test.pdf` con PDF ricco (tabelle, formule, immagini) |
+
+### 🔑 Inline API key input per quick-add web tool
+
+Quando l'utente clicca "Tavily" o "Perplexity" nei pulsanti quick-add, appare un input
+inline per incollare la API key **prima** che il tool venga creato.
+
+**File**: `frontend/src/pages/UploadPage.tsx`, `frontend/src/components/configure/InformationPanel.tsx`
+
+### 🌐 Wikipedia User-Agent fix
+
+Aggiunto User-Agent descrittivo conforme alla [policy Wikimedia](https://meta.wikimedia.org/wiki/User-Agent_policy)
+(`PDF2LaTeX/1.0 (https://github.com/PDF2LaTeX)`). Centralizzato in `web_search.py` come `USER_AGENT`.
+
+**File**: `backend/app/services/web_search.py`, `backend/app/agents/web_agent.py`
+
+### ⚙️ Unificazione dev dependencies
+
+Rimosso `dev` da `[project.optional-dependencies]` e unificato in `[dependency-groups] dev`.
+Ora `uv sync --dev` installa `fastapi-cli`, `ruff`, `pytest`, `pytest-asyncio`.
+
+**File**: `backend/pyproject.toml`
+
+### 📊 Altro
+
+- **Guard `if not img_path.exists()`** nei sandbox per errori chiari se gli asset mancano
+- **Test `test_adapter_failure_does_not_block_graph`** — verifica che un adapter fallito non blocchi il grafo
+- **Badge `🔑 KEY`** sui pulsanti quick-add che richiedono API key (Tavily, Perplexity)
+- **Torch CUDA 12.4** verificato funzionante con `uv sync` (configurato in `pyproject.toml`)
+
+---
+
+## Sessione 2025-06-18
 
 ## 🐛 Bug Fix
 

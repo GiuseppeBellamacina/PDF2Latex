@@ -34,14 +34,14 @@ export interface NodeDetail {
 
 /* ── Layout constants ──────────────────────────────────────────────────── */
 
-export const NODE_W = 148;
-export const NODE_H = 52;
-export const CHAPTER_W = 130;
-export const CHAPTER_H = 36;
-export const COL_GAP = 80;
-export const START_X = 24;
-export const CENTER_Y = 160;
-export const ROW_SPREAD = 94;
+export const NODE_W = 170;
+export const NODE_H = 60;
+export const CHAPTER_W = 150;
+export const CHAPTER_H = 42;
+export const COL_GAP = 64;
+export const START_X = 28;
+export const CENTER_Y = 200;
+export const ROW_SPREAD = 108;
 
 /* ── SVG colours ───────────────────────────────────────────────────────── */
 
@@ -458,8 +458,8 @@ export function y0(row: number): number {
 }
 
 /** Chapter sub-node positions: fan out below the write node. */
-export const CHAPTER_START_Y = CENTER_Y + NODE_H / 2 + 28;
-export const CHAPTER_ROW_H = CHAPTER_H + 10;
+export const CHAPTER_START_Y = CENTER_Y + NODE_H / 2 + 36;
+export const CHAPTER_ROW_H = CHAPTER_H + 12;
 
 export function chapterX(index: number, total: number): number {
   const totalW = total * CHAPTER_W + (total - 1) * 10;

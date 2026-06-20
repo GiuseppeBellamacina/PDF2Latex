@@ -246,7 +246,16 @@ async def test_run_generation_mixed_sources(tmp_path, monkeypatch):
         _fake_pipeline,
     )
 
-    # (d) Point uploads/output dirs at tmp_path.
+    # (d) Avoid pytesseract → pandas → pyarrow access violation on Windows.
+    # The runner delegates OCR to a subprocess on Windows, which would slow
+    # the test unnecessarily.  Image-source OCR is covered by dedicated
+    # tests in test_multi_source.py.
+    monkeypatch.setattr(
+        "app.services.runner._pytesseract_available",
+        lambda: False,
+    )
+
+    # (e) Point uploads/output dirs at tmp_path.
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "uploads_dir", tmp_path / "uploads")

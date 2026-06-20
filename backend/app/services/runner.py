@@ -6,6 +6,7 @@ Supports both PDF-based and research-based (web search) generation modes.
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from sqlalchemy import select
 
 from app.agents.graph import run_pipeline
 from app.agents.utils import tokens
+from app.core.cancellation import CancellationError, CancellationToken
 from app.core.config import settings
 from app.core.encryption import decrypt_api_key
 from app.core.logging import get_logger
@@ -39,6 +41,62 @@ FEWSHOT_PATHS = [
 ]
 
 
+_PYTESSERACT_INSTALLED: bool | None = None
+
+
+def _pytesseract_available() -> bool:
+    """Return True if the pytesseract package is installed.
+
+    On Linux/macOS this is a fast in-process check.  On Windows, however,
+    pytesseract → pandas → pyarrow can access-violate when the pyarrow DLL
+    is loaded concurrently with database worker threads.  Since we can't
+    catch an access violation, the actual OCR work is delegated to an
+    isolated subprocess on Windows — this function only reports whether the
+    package exists (so we know delegation is possible).
+
+    The result is cached for the lifetime of the process.
+    """
+    global _PYTESSERACT_INSTALLED
+    if _PYTESSERACT_INSTALLED is not None:
+        return _PYTESSERACT_INSTALLED
+
+    import importlib.util
+
+    _PYTESSERACT_INSTALLED = importlib.util.find_spec("pytesseract") is not None
+    if not _PYTESSERACT_INSTALLED:
+        logger.debug("pytesseract not installed — OCR for image sources disabled")
+    return _PYTESSERACT_INSTALLED
+
+
+def _ocr_image_subprocess(img_path: Path) -> str:
+    """Run pytesseract OCR on an image in an isolated subprocess.
+
+    Returns the recognised text, or ``""`` if OCR fails.
+
+    Needed on Windows because pytesseract → pandas → pyarrow can
+    access-violate when the pyarrow DLL is loaded concurrently with other
+    threads (e.g. aiosqlite).  The subprocess absorbs any crash.
+    """
+    import subprocess
+
+    code = (
+        "import pytesseract; from PIL import Image; "
+        f"print(pytesseract.image_to_string(Image.open({img_path.as_posix()!r})).strip())"
+    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _load_few_shot() -> str:
     for p in FEWSHOT_PATHS:
         if p.exists():
@@ -51,6 +109,7 @@ async def run_generation(
     provider_id: int,
     model: str | None = None,
     role_providers: dict[str, dict[str, Any]] | None = None,
+    cancel_token: CancellationToken | None = None,
 ) -> None:
     """Run the entire generation for a project, streaming progress over WS."""
     async with async_session() as session:
@@ -115,6 +174,21 @@ async def run_generation(
                 role_configs[role] = build_llm_config(rp_provider, rp.get("model"))
             if role_configs:
                 logger.info("Per-role providers: %s", list(role_configs.keys()))
+
+        # ── Fallback: use project-level Web Agent provider for researcher role ──
+        if "researcher" not in role_configs and project.web_agent_provider_id:
+            wa_provider = await session.get(
+                ProviderConfig, project.web_agent_provider_id
+            )
+            if wa_provider and wa_provider.is_active:
+                role_configs["researcher"] = build_llm_config(
+                    wa_provider, project.web_agent_model or None
+                )
+                logger.info(
+                    "Web Agent LLM from project: provider=%s model=%s",
+                    wa_provider.name,
+                    project.web_agent_model or wa_provider.default_model,
+                )
 
         few_shot = _load_few_shot()
         language = project.language
@@ -214,6 +288,7 @@ async def run_generation(
                                 Path(src.path),
                                 figures_dir,
                                 _progress_cb,
+                                cancel_token,
                             )
                             src.n_pages = doc.n_pages
                             all_figs = list(
@@ -285,22 +360,32 @@ async def run_generation(
                             if img_path != dest:
                                 dest.write_bytes(img_path.read_bytes())
                             rel = f"figures/{img_path.name}"
-                            # Attempt OCR (best-effort — pytesseract may not be installed).
+                            # Attempt OCR (best-effort).
+                            # pytesseract → pandas → pyarrow can access-violate
+                            # on Windows during concurrent thread init (known DLL
+                            # issue).  On Windows we delegate OCR to an isolated
+                            # subprocess; on Linux/macOS the in-process import is
+                            # safe.
                             ocr_text = ""
-                            try:
-                                import pytesseract
-                                from PIL import Image
+                            if _pytesseract_available():
+                                if sys.platform == "win32":
+                                    ocr_text = _ocr_image_subprocess(img_path)
+                                else:
+                                    try:
+                                        import pytesseract
+                                        from PIL import Image
 
-                                ocr_text = pytesseract.image_to_string(
-                                    Image.open(img_path)
-                                ).strip()
-                                logger.info(
-                                    "OCR su %s: %d caratteri",
-                                    src.filename,
-                                    len(ocr_text),
-                                )
-                            except Exception:
-                                pass
+                                        ocr_text = pytesseract.image_to_string(
+                                            Image.open(img_path)
+                                        ).strip()
+                                    except Exception:
+                                        pass
+                                if ocr_text:
+                                    logger.info(
+                                        "OCR su %s: %d caratteri",
+                                        src.filename,
+                                        len(ocr_text),
+                                    )
                             full_text = (
                                 ocr_text if ocr_text else f"[Immagine: {src.filename}]"
                             )
@@ -378,11 +463,50 @@ async def run_generation(
                 logger.info("Progetto %s: LLM figure scoring completato", project_id)
 
             # ── Build web_tool_configs for research mode ────────────────────
+            # Web Agent (orchestrator) and Wikipedia (search backend) are
+            # always present when research mode is enabled.
+            # Additional tools (Tavily, Perplexity) are loaded from the
+            # project's web_tool_ids.
             web_tool_configs: list[dict[str, Any]] = []
-            if project.research_mode and project.web_tool_ids:
-                for tid in project.web_tool_ids:
-                    web_tool = await session.get(WebToolConfig, tid)
-                    if web_tool and web_tool.is_active:
+            if project.research_mode:
+                # ── Web Agent (orchestrator) ────────────────────────────
+                web_tool_configs.append(
+                    {
+                        "tool_type": "web_agent",
+                        "api_key": "",
+                        "base_url": "",
+                        "params": {
+                            "max_iterations": int(project.web_agent_max_iterations),
+                        },
+                        "max_queries": project.research_max_queries,
+                    }
+                )
+                # ── Wikipedia + Arxiv (always-available search backends) ────────
+                web_tool_configs.append(
+                    {
+                        "tool_type": "wikipedia",
+                        "api_key": "",
+                        "base_url": "",
+                        "params": {},
+                    }
+                )
+                web_tool_configs.append(
+                    {
+                        "tool_type": "arxiv",
+                        "api_key": "",
+                        "base_url": "",
+                        "params": {},
+                    }
+                )
+                # ── User-configured tools (Tavily / Perplexity) ──────────────
+                if project.web_tool_ids:
+                    for tid in project.web_tool_ids:
+                        web_tool = await session.get(WebToolConfig, tid)
+                        if not web_tool or not web_tool.is_active:
+                            continue
+                        # Skip core tool IDs (seeded automatically)
+                        if web_tool.tool_type in ("wikipedia", "web_agent", "arxiv"):
+                            continue
                         web_tool_configs.append(
                             {
                                 "tool_type": web_tool.tool_type,
@@ -394,9 +518,7 @@ async def run_generation(
                             }
                         )
                         logger.info("Research mode: tool=%s", web_tool.tool_type)
-                if web_tool_configs:
-                    web_tool_configs[0]["max_queries"] = project.research_max_queries
-                    logger.info("Research mode: %d tools active", len(web_tool_configs))
+                logger.info("Research mode: %d tools active", len(web_tool_configs))
 
             # ── Pipeline ────────────────────────────────────────────────────
             final = await run_pipeline(
@@ -458,6 +580,25 @@ async def run_generation(
                 project_id,
                 project.status.value,
                 tokens.snapshot(),
+            )
+        except CancellationError:
+            logger.info("Progetto %s cancellato dall'utente", project_id)
+            project.status = ProjectStatus.failed
+            project.error_message = "Generazione interrotta dall'utente"
+            await session.commit()
+            await manager.emit(
+                project_id,
+                {
+                    "stage": "stopped",
+                    "message": "Interrotto dall'utente",
+                    "progress": project.completed_sections
+                    * 100
+                    // max(project.total_sections, 1)
+                    if project.total_sections
+                    else 0,
+                    "status": "failed",
+                    "level": "warning",
+                },
             )
         except Exception as exc:  # noqa: BLE001 - report failure to UI + DB
             logger.exception("Generazione fallita per progetto %s: %s", project_id, exc)

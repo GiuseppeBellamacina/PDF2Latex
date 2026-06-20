@@ -29,6 +29,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.core.cancellation import CancellationToken
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.services import pipeline
@@ -512,7 +513,11 @@ class FigureInfo:
 
 class BaseExtractor:
     def extract(
-        self, pdf_path: Path, figures_dir: Path, progress: ProgressCb = None
+        self,
+        pdf_path: Path,
+        figures_dir: Path,
+        progress: ProgressCb = None,
+        cancel_token: CancellationToken | None = None,
     ) -> ExtractedDocument:
         raise NotImplementedError
 
@@ -567,7 +572,11 @@ class PyMuPDFExtractor(BaseExtractor):
         return out
 
     def extract(
-        self, pdf_path: Path, figures_dir: Path, progress: ProgressCb = None
+        self,
+        pdf_path: Path,
+        figures_dir: Path,
+        progress: ProgressCb = None,
+        cancel_token: CancellationToken | None = None,
     ) -> ExtractedDocument:
         import fitz  # PyMuPDF
 
@@ -591,6 +600,8 @@ class PyMuPDFExtractor(BaseExtractor):
             ),
         )
         for i in range(1, doc.page_count + 1):
+            if cancel_token:
+                cancel_token.check()
             page = doc.load_page(i - 1)
             text = page.get_text("text").strip()
 
@@ -777,7 +788,11 @@ def _run_docling_chunk(slice_pdf: Path, timeout: int) -> str | None:
         return None
 
 
-def docling_markdown_chunked(pdf_path: Path, progress: ProgressCb = None) -> str | None:
+def docling_markdown_chunked(
+    pdf_path: Path,
+    progress: ProgressCb = None,
+    cancel_token: CancellationToken | None = None,
+) -> str | None:
     """Convert a PDF to structured markdown via Docling, safely.
 
     Steps: cache lookup -> page-count guard -> slice into chunks -> isolated
@@ -839,6 +854,8 @@ def docling_markdown_chunked(pdf_path: Path, progress: ProgressCb = None) -> str
     with tempfile.TemporaryDirectory(prefix="docling_") as tmp:
         tmp_dir = Path(tmp)
         for ci in range(n_chunks):
+            if cancel_token:
+                cancel_token.check()
             start = ci * chunk_size
             end = min(start + chunk_size, n_pages)
             slice_pdf = tmp_dir / f"chunk_{ci:03d}.pdf"
@@ -906,9 +923,13 @@ class DoclingExtractor(BaseExtractor):
     """Structured extraction via Docling (rich markdown, no embedded figures)."""
 
     def extract(
-        self, pdf_path: Path, figures_dir: Path, progress: ProgressCb = None
+        self,
+        pdf_path: Path,
+        figures_dir: Path,
+        progress: ProgressCb = None,
+        cancel_token: CancellationToken | None = None,
     ) -> ExtractedDocument:
-        markdown = docling_markdown_chunked(pdf_path, progress) or ""
+        markdown = docling_markdown_chunked(pdf_path, progress, cancel_token) or ""
         pages = [PageContent(page=1, text=markdown, source="docling")]
         return ExtractedDocument(
             filename=pdf_path.name, pages=pages, rich_markdown=markdown or None
@@ -940,9 +961,13 @@ class HybridExtractor(BaseExtractor):
         )
 
     def extract(
-        self, pdf_path: Path, figures_dir: Path, progress: ProgressCb = None
+        self,
+        pdf_path: Path,
+        figures_dir: Path,
+        progress: ProgressCb = None,
+        cancel_token: CancellationToken | None = None,
     ) -> ExtractedDocument:
-        doc = self._py.extract(pdf_path, figures_dir, progress)
+        doc = self._py.extract(pdf_path, figures_dir, progress, cancel_token)
 
         # Remove running headers/footers from the per-page text (improves both
         # the PyMuPDF fallback and any downstream analysis).
@@ -951,7 +976,7 @@ class HybridExtractor(BaseExtractor):
             for page, text in zip(doc.pages, cleaned):
                 page.text = text
 
-        rich = docling_markdown_chunked(pdf_path, progress)
+        rich = docling_markdown_chunked(pdf_path, progress, cancel_token)
         if rich:
             doc.rich_markdown = rich
         else:
@@ -971,10 +996,10 @@ class PipelineExtractor(BaseExtractor):
     Orchestrates the selected tool for each stage:
 
     * **text** — PyMuPDF per-page text (always);
-    * **structure** — rich markdown (Docling / Marker / MinerU) used as primary
+    * **structure** — rich markdown (Docling) used as primary
       text when available, else PyMuPDF text;
     * **ocr** — engine used for image-only pages and figure label reading;
-    * **math** — Nougat math-rich markdown appended when enabled;
+    * **math** — pix2tex equation-to-LaTeX from images;
     * **figures** — PyMuPDF embedded-figure extraction;
     * **figure_scoring** — heuristic, optionally OCR-assisted (the ``vlm`` option
       is applied later, with the LLM, in the runner).
@@ -1004,11 +1029,18 @@ class PipelineExtractor(BaseExtractor):
         )
 
     def extract(
-        self, pdf_path: Path, figures_dir: Path, progress: ProgressCb = None
+        self,
+        pdf_path: Path,
+        figures_dir: Path,
+        progress: ProgressCb = None,
+        cancel_token: CancellationToken | None = None,
     ) -> ExtractedDocument:
-        from app.services import math_engines, structure_engines
+        from app.services import structure_engines
 
-        doc = self._py.extract(pdf_path, figures_dir, progress)
+        doc = self._py.extract(pdf_path, figures_dir, progress, cancel_token)
+
+        if cancel_token:
+            cancel_token.check()
 
         if settings.dedup_headers_footers and doc.pages:
             cleaned = strip_recurring_lines([p.text for p in doc.pages])
@@ -1028,20 +1060,6 @@ class PipelineExtractor(BaseExtractor):
                     "Pipeline: struttura '%s' non disponibile per %s, uso PyMuPDF",
                     structure_tool,
                     pdf_path.name,
-                )
-
-        # Math stage -> append math-rich markdown (Nougat) to the primary text.
-        math_tool = self.config.get("math", "none")
-        if math_tool == "nougat":
-            mmd = math_engines.math_markdown(pdf_path, "nougat")
-            if mmd:
-                base = doc.rich_markdown or doc.full_text()
-                doc.rich_markdown = f"{base}\n\n{mmd}".strip()
-                _notify(
-                    progress,
-                    message=f"Nougat: matematica recuperata per {pdf_path.name}",
-                    detail=f"{len(mmd)} caratteri",
-                    level="success",
                 )
 
         return doc

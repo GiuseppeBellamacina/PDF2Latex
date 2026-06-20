@@ -39,7 +39,7 @@ class Tool:
     label: str
     description: str
     # Top-level importable module that proves the tool is installed. ``None``
-    # means the tool is always available (built-in / no extra dependency).
+    # means the tool is always available (no extra dependency).
     requires: tuple[str, ...] = ()
     # uv command hint shown in the UI when the tool isn't installed yet.
     install: str = ""
@@ -105,30 +105,7 @@ STAGES: tuple[Stage, ...] = (
                     "blocchi di pagine per non esaurire la memoria sui PDF grandi."
                 ),
                 requires=("docling",),
-                install="uv sync --extra structure-docling",
-                gpu=True,
-            ),
-            Tool(
-                id="marker",
-                label="Marker",
-                description=(
-                    "Conversione PDF→markdown ad alta fedeltà con buon supporto "
-                    "per tabelle ed equazioni. Sfrutta la GPU se presente."
-                ),
-                requires=("marker",),
-                install="uv sync --extra structure-marker",
-                gpu=True,
-            ),
-            Tool(
-                id="mineru",
-                label="MinerU",
-                description=(
-                    "Pipeline completa di document-understanding (testo, tabelle, "
-                    "formule, ordine di lettura). Ottima su paper scientifici, "
-                    "richiede GPU per essere veloce."
-                ),
-                requires=("magic_pdf",),
-                install="uv sync --extra structure-mineru",
+                install="uv sync --extra tools",
                 gpu=True,
             ),
         ),
@@ -152,7 +129,7 @@ STAGES: tuple[Stage, ...] = (
                     "pack."
                 ),
                 requires=("pytesseract",),
-                install="uv sync --extra ocr-tesseract  (+ binario Tesseract)",
+                install="uv sync --extra tools  (+ binario Tesseract)",
             ),
             Tool(
                 id="rapidocr",
@@ -162,41 +139,7 @@ STAGES: tuple[Stage, ...] = (
                     "installare. Buon compromesso qualità/velocità su CPU."
                 ),
                 requires=("rapidocr_onnxruntime",),
-                install="uv sync --extra ocr-rapidocr",
-            ),
-            Tool(
-                id="paddleocr",
-                label="PaddleOCR",
-                description=(
-                    "OCR molto accurato con rilevamento del layout; sfrutta la GPU "
-                    "se disponibile. Ottimo su documenti complessi."
-                ),
-                requires=("paddleocr",),
-                install="uv sync --extra ocr-paddle",
-                gpu=True,
-            ),
-            Tool(
-                id="surya",
-                label="Surya",
-                description=(
-                    "OCR moderno basato su transformer, multilingue e robusto sui "
-                    "layout difficili. Pensato per la GPU."
-                ),
-                requires=("surya",),
-                install="uv sync --extra ocr-surya",
-                gpu=True,
-            ),
-            Tool(
-                id="dots_ocr",
-                label="dots.ocr",
-                description=(
-                    "VLM compatto (1.7B) che fa OCR e parsing del layout in un "
-                    "unico passaggio, stato dell'arte sul testo multilingue. "
-                    "Richiede GPU."
-                ),
-                requires=("transformers",),
-                install="uv sync --extra ocr-dots",
-                gpu=True,
+                install="uv sync --extra tools",
             ),
         ),
     ),
@@ -218,18 +161,7 @@ STAGES: tuple[Stage, ...] = (
                     "LaTeX. Leggero, sfrutta la GPU."
                 ),
                 requires=("pix2tex",),
-                install="uv sync --extra math-pix2tex",
-                gpu=True,
-            ),
-            Tool(
-                id="nougat",
-                label="Nougat (Meta)",
-                description=(
-                    "Trasformer accademico che produce markdown ricco di "
-                    "matematica direttamente dalle pagine. Richiede GPU."
-                ),
-                requires=("nougat",),
-                install="uv sync --extra math-nougat",
+                install="uv sync --extra tools",
                 gpu=True,
             ),
         ),
@@ -296,8 +228,6 @@ STAGES: tuple[Stage, ...] = (
         ),
     ),
 )
-
-_STAGE_BY_ID = {s.id: s for s in STAGES}
 
 
 # --------------------------------------------------------------------------- #
@@ -398,10 +328,3 @@ def describe_pipeline(cfg: dict | None = None) -> list[dict]:
             }
         )
     return out
-
-
-def stage_tool(cfg: dict | None, stage_id: str) -> str:
-    """The selected tool id for a stage in a (normalized) config."""
-    return normalize_pipeline_config(cfg).get(
-        stage_id, _STAGE_BY_ID[stage_id].default if stage_id in _STAGE_BY_ID else "none"
-    )

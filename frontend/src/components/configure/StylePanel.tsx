@@ -103,7 +103,7 @@ export default function StylePanel({
           checked={writerUseKnowledge}
           onChange={setWriterUseKnowledge}
           label="Allow writer to supplement with own knowledge"
-          hint="When enabled, the AI can use its internal knowledge when source text is insufficient."
+          hint="Let the AI supplement source text with its own knowledge when needed."
         />
       </div>
 
@@ -116,7 +116,7 @@ export default function StylePanel({
           <h2 className="text-sm font-semibold uppercase tracking-wide text-ink-400">LaTeX Template</h2>
         </div>
         <p className="mb-3 text-xs text-ink-500">
-          The template determines the document class, page layout, and typography.
+          Document class, layout, and typography.
         </p>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {availableTemplates.map((t) => {

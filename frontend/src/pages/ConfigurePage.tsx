@@ -9,13 +9,14 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api, type Figure, type LatexTemplate, type Project, type Source, type WebTool } from "../lib/api";
+import { api, type Figure, type LatexTemplate, type Project, type Source } from "../lib/api";
 import InformationPanel from "../components/configure/InformationPanel";
 import StructurePanel from "../components/configure/StructurePanel";
 import PipelinePanel from "../components/configure/PipelinePanel";
 import StylePanel from "../components/configure/StylePanel";
 import FiguresPanel from "../components/configure/FiguresPanel";
 import { cn, parseUserSources, type ParsedSource } from "../lib/utils";
+import { useAppStore } from "../stores/appStore";
 
 const DEFAULT_PIPELINE: Record<string, string> = {
   text: "pymupdf", structure: "docling", ocr: "tesseract",
@@ -65,8 +66,16 @@ export default function ConfigurePage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [researchMode, setResearchMode] = useState(false);
   const [webToolIds, setWebToolIds] = useState<number[]>([]);
-  const [webTools, setWebTools] = useState<WebTool[]>([]);
   const [researchMaxQueriesStr, setResearchMaxQueriesStr] = useState("");
+  const [webAgentMaxIterations, setWebAgentMaxIterations] = useState(3);
+  const [webAgentProviderId, setWebAgentProviderId] = useState<number | null>(null);
+  const [webAgentModel, setWebAgentModel] = useState("");
+
+  const { providers, loadProviders } = useAppStore();
+
+  useEffect(() => {
+    loadProviders();
+  }, [loadProviders]);
 
   useEffect(() => {
     api.getProject(id).then((p) => {
@@ -86,6 +95,9 @@ export default function ConfigurePage() {
       setResearchMode(p.research_mode ?? false);
       setWebToolIds(p.web_tool_ids ?? []);
       setResearchMaxQueriesStr(p.research_max_queries?.toString() ?? "");
+      setWebAgentMaxIterations(p.web_agent_max_iterations ?? 3);
+      setWebAgentProviderId(p.web_agent_provider_id ?? null);
+      setWebAgentModel(p.web_agent_model ?? "");
       if (p.user_sources?.length) {
         setUserSourcesRaw(
           p.user_sources.map((s) =>
@@ -102,7 +114,6 @@ export default function ConfigurePage() {
       .finally(() => setLoading(false));
 
     api.listTemplates().then(setAvailableTemplates).catch(() => {});
-    api.listWebTools().then(setWebTools).catch(() => setWebTools([]));
   }, [id, refreshKey]);
 
   const figuresBySource = useMemo(() => {
@@ -154,6 +165,9 @@ export default function ConfigurePage() {
           const v = parseInt(researchMaxQueriesStr, 10);
           return v > 0 ? v : null;
         })(),
+        web_agent_max_iterations: webAgentMaxIterations,
+        web_agent_provider_id: webAgentProviderId ?? undefined,
+        web_agent_model: webAgentModel || undefined,
         source_order: orderedSources.map((s) => s.id),
         mandatory_figure_ids: [...mandatoryIds],
       });
@@ -232,9 +246,15 @@ export default function ConfigurePage() {
                 setResearchMode={setResearchMode}
                 webToolIds={webToolIds}
                 setWebToolIds={setWebToolIds}
-                webTools={webTools}
                 researchMaxQueriesStr={researchMaxQueriesStr}
                 setResearchMaxQueriesStr={setResearchMaxQueriesStr}
+                webAgentMaxIterations={webAgentMaxIterations}
+                setWebAgentMaxIterations={setWebAgentMaxIterations}
+                providers={providers}
+                webAgentProviderId={webAgentProviderId}
+                setWebAgentProviderId={setWebAgentProviderId}
+                webAgentModel={webAgentModel}
+                setWebAgentModel={setWebAgentModel}
               />
             )}
             {activeSection === "structure" && (
@@ -283,7 +303,7 @@ export default function ConfigurePage() {
       {error && <p className="text-sm text-red-500">{error}</p>}
 
       {/* Sticky bottom bar */}
-      <div className="sticky bottom-0 -mx-4 border-t border-ink-200 bg-ink-50/90 px-4 py-3 backdrop-blur dark:border-ink-800 dark:bg-ink-950/90">
+      <div className="sticky bottom-0 z-20 -mx-4 border-t border-ink-200 bg-ink-50/90 px-4 py-3 backdrop-blur dark:border-ink-800 dark:bg-ink-950/90">
         <div className="flex items-center justify-end gap-3">
           <button className="btn-ghost" disabled={saving} onClick={() => save(false)}>
             {saving ? <Loader2 size={16} className="animate-spin" /> : null}

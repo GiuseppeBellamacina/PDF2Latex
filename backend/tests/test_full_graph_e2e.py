@@ -1086,9 +1086,11 @@ async def test_full_graph_user_sources_merged_and_audited():
     )
 
     # ── Assertions: merge progress mentions citation problems ──────────────
+    # There are two "merge" stage events: merge_analyses_node (first) and
+    # merge_node (diamond fan-in, second). We want the latter.
     merge_events = [e for e in progress_events if e.get("stage") == "merge"]
     assert merge_events, "Merge progress event should exist"
-    merge_msg = merge_events[0].get("message", "")
+    merge_msg = merge_events[-1].get("message", "")
     assert "problemi citazioni" in merge_msg, (
         f"Merge should report citation issues. Got: {merge_msg}"
     )
@@ -2162,9 +2164,11 @@ async def test_full_graph_coherence_and_citations_disabled():
     )
 
     # ── Assertions: merge just says "Verifiche completate" ────────────────
+    # There are two "merge" stage events: merge_analyses_node (first) and
+    # merge_node (diamond fan-in, second). We want the latter.
     merge_events = [e for e in progress_events if e.get("stage") == "merge"]
     assert merge_events, "Merge progress event should exist"
-    merge_msg = merge_events[0].get("message", "")
+    merge_msg = merge_events[-1].get("message", "")
     assert merge_msg == "Verifiche completate", (
         f"Merge should report 'Verifiche completate' with no issues. Got: {merge_msg}"
     )

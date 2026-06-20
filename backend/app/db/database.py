@@ -14,11 +14,11 @@ async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit
 
 
 async def init_db() -> None:
-    """Create all tables, apply lightweight in-place migrations, and seed built-in tools."""
+    """Create all tables, apply lightweight in-place migrations, and seed core tools."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_migrate_add_columns)
-        await conn.run_sync(_seed_builtin_tools)
+        await conn.run_sync(_seed_core_tools)
 
 
 # New columns added after the first schema version. SQLite can ADD COLUMN
@@ -47,6 +47,9 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "web_tool_id": "INTEGER",
         "web_tool_ids": "JSON",
         "research_max_queries": "INTEGER",
+        "web_agent_max_iterations": "INTEGER DEFAULT 3",
+        "web_agent_provider_id": "INTEGER REFERENCES provider_configs(id)",
+        "web_agent_model": "VARCHAR(100)",
     },
     "figures": {
         "caption": "TEXT",
@@ -77,10 +80,10 @@ def _migrate_add_columns(sync_conn) -> None:  # noqa: ANN001 - sqlalchemy Connec
                 sync_conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
 
-def _seed_builtin_tools(sync_conn) -> None:  # noqa: ANN001
-    """Create built-in web search tools that don't need API keys.
+def _seed_core_tools(sync_conn) -> None:  # noqa: ANN001
+    """Create core web search tools that don't need API keys.
 
-    Wikipedia and Custom HTTPX are always available when research mode is
+    Wikipedia and Web Agent are always available when research mode is
     enabled. They are created here (idempotent — skipped if already present)
     so the user doesn't have to configure them manually.
 
@@ -94,7 +97,7 @@ def _seed_builtin_tools(sync_conn) -> None:  # noqa: ANN001
     if row is None:
         sync_conn.exec_driver_sql(
             "INSERT INTO web_tools (name, tool_type, is_active) "
-            "VALUES ('Wikipedia (built-in)', 'wikipedia', 1)"
+            "VALUES ('Wikipedia', 'wikipedia', 1)"
         )
 
     # Check if Web Agent already exists.
@@ -104,7 +107,7 @@ def _seed_builtin_tools(sync_conn) -> None:  # noqa: ANN001
     if row is None:
         sync_conn.exec_driver_sql(
             "INSERT INTO web_tools (name, tool_type, is_active) "
-            "VALUES ('Web Agent (built-in)', 'web_agent', 1)"
+            "VALUES ('Web Agent', 'web_agent', 1)"
         )
 
     # Migrate existing projects: copy old web_tool_id → web_tool_ids.

@@ -63,52 +63,48 @@ flowchart TD
 
 ### Dettaglio del grafo LangGraph
 
+Grafo generato automaticamente (vedi [`docs/GRAPH.md`](docs/GRAPH.md)).
+
 ```mermaid
-stateDiagram-v2
-    [*] --> extract
-    extract --> analyze
-    [*] --> research : research_mode
-    analyze --> merge_analyses
-    research --> merge_analyses
-    merge_analyses --> plan
-    plan --> write
-
-    state write {
-        [*] --> chapter_A
-        [*] --> chapter_B
-        [*] --> chapter_C
-        chapter_A --> [*]
-        chapter_B --> [*]
-        chapter_C --> [*]
-    }
-
-    write --> overview
-    write --> coherence
-    write --> citations
-
-    overview --> merge
-    coherence --> merge
-    citations --> merge
-
-    merge --> review
-
-    state review {
-        [*] --> assemble
-        assemble --> lint_latex
-        lint_latex --> pdflatex
-        pdflatex --> check
-        check --> retry_reviewer
-        retry_reviewer --> pdflatex
-        check --> [*]
-    }
-
-    review --> after_review
-    after_review --> judge : judge_enabled AND pdf OK
-    after_review --> [*] : else
-
-    judge --> after_judge
-    after_judge --> review : revise
-    after_judge --> [*] : approve / max_iterations
+---
+config:
+  flowchart:
+    curve: basis
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	analyze(analyze)
+	research(research)
+	merge_analyses(merge_analyses)
+	plan(plan)
+	write(write)
+	overview(overview)
+	coherence(coherence)
+	citations(citations)
+	merge(merge)
+	review(review)
+	judge(judge)
+	__end__([<p>__end__</p>]):::last
+	__start__ -.-> analyze;
+	__start__ -.-> research;
+	analyze --> merge_analyses;
+	citations --> merge;
+	coherence --> merge;
+	judge -.-> __end__;
+	judge -.-> review;
+	merge --> review;
+	merge_analyses --> plan;
+	overview --> merge;
+	plan --> write;
+	research --> merge_analyses;
+	review -.-> __end__;
+	review -.-> judge;
+	write --> citations;
+	write --> coherence;
+	write --> overview;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
 ```
 
 ---
@@ -189,6 +185,7 @@ Come i provider LLM, i web tool sono configurabili da UI (**Settings → Web sea
 | **Wikipedia** | ❌ gratis | API pubblica, nessuna chiave richiesta |
 | **Tavily** | ✅ richiesta | Search API ottimizzata per AI |
 | **Perplexity** | ✅ richiesta | Ricerca con sintesi AI |
+| **Web Agent** | ❌ dipende | Agentic LangGraph: LLM pianifica URL → fetch → valuta |
 | **Custom HTTPX** | ❌ opzionale | Template HTTPX con interpolazione JSON/URL |
 
 Ogni tool espone `search(query)` e `fetch_page(url)`. Le chiavi API sono salvate **cifrate** (Fernet).
@@ -218,9 +215,9 @@ L'estrazione PDF è modellata come una sequenza di **stage indipendenti**, ognun
 | Stage | Tool disponibili | Default |
 |-------|-----------------|---------|
 | **Testo digitale** | PyMuPDF | `pymupdf` |
-| **Struttura & tabelle** | Docling (IBM), Marker, MinerU | `docling` |
-| **OCR scansioni** | Tesseract, RapidOCR, PaddleOCR, Surya, dots.ocr | `tesseract` |
-| **Matematica** | pix2tex (LaTeX-OCR), Nougat (Meta) | `none` |
+| **Struttura & tabelle** | Docling (IBM) | `docling` |
+| **OCR scansioni** | Tesseract, RapidOCR | `tesseract` |
+| **Matematica** | pix2tex (LaTeX-OCR) | `none` |
 | **Figure** | PyMuPDF | `pymupdf` |
 | **Punteggio figure** | Euristica, Euristica+OCR, Euristica+VLM | `heuristic` |
 
@@ -248,57 +245,36 @@ vengono aggiunti tramite flag `--extra`.
 # Solo le dipendenze obbligatorie (FastAPI, LangGraph, PyMuPDF, ...)
 uv sync
 
-# Aggiungi tutti gli optional che ti servono, es.:
-uv sync --extra structure-docling --extra ocr-tesseract --extra math-nougat
+# Con tutti gli strumenti di estrazione (Docling, OCR, math, web, ricerca):
+uv sync --extra tools
+
+# Con strumenti di sviluppo (lint, test):
+uv sync --dev
 ```
 
 ### Extra disponibili
 
 | Extra | Pacchetto(i) | A cosa serve | Note |
 |-------|-------------|-------------|------|
-| **Structure / Tabelle** | | | |
-| `structure-docling` | `docling>=2.0` | Estrazione struttura & tabelle (IBM) | Default raccomandato |
-| `structure-marker` | `marker-pdf>=1.0` | Conversione PDF → Markdown | Alternativa a Docling |
-| `structure-mineru` | `magic-pdf>=1.0` | Estrazione struttura (MinerU) | Alternativa a Docling |
-| **OCR (scansioni)** | | | |
-| `ocr-tesseract` | `pytesseract>=0.3.10` | OCR via Tesseract | Richiede binario `tesseract` nel PATH |
-| `ocr-rapidocr` | `rapidocr-onnxruntime>=1.3` | OCR via RapidOCR | ⚠️ Conflitto `opencv-python` con math extras |
-| `ocr-paddle` | `paddleocr>=2.7`, `paddlepaddle>=2.6` | OCR via PaddleOCR | |
-| `ocr-surya` | `surya-ocr>=0.6` | OCR via Surya | |
-| `ocr-dots` | `transformers>=4.44`, `torch>=2.2` | OCR via dots.ocr | Richiede GPU per performance |
-| **Matematica / Equazioni** | | | |
-| `math-pix2tex` | `pix2tex>=0.1.2` | LaTeX da immagini di equazioni (LaTeX-OCR) | |
-| `math-nougat` | `nougat-ocr>=0.1.17` | Estrazione math (Meta) | Richiede `albumentations<2.0`, `opencv-python-headless<4.11` |
-| **Web & Ricerca** | | | |
-| `web-trafilatura` | `trafilatura>=1.12` | Estrazione testo pulito da pagine web | Rimuove nav, footer, ads |
-| `research-tavily` | `tavily-python>=0.5` | Search API ottimizzata per AI (Tavily) | Richiede API key |
-| **Sviluppo** | | | |
-| `dev` | `ruff>=0.6`, `pytest>=8.0`, `pytest-asyncio>=0.24` | Lint, formattazione, test | |
+| `tools` | `docling`, `pytesseract`, `rapidocr-onnxruntime`, `pix2tex`, `trafilatura`, `tavily-python` | Tutti gli strumenti di estrazione (struttura, OCR, math, web, ricerca) | ⚠️ `pix2tex` compete su `cv2` con `rapidocr` |
+| `dev` | `fastapi-cli`, `ruff>=0.6`, `pytest>=8.0`, `pytest-asyncio>=0.24` | Lint, formattazione, test, dev server | `uv sync --dev` |
 
 ### Come installare
 
 ```pwsh
-# Esempio: Docling per struttura + Tesseract per OCR + Nougat per math
-uv sync --extra structure-docling --extra ocr-tesseract --extra math-nougat
+# Minimo: solo core
+uv sync
 
-# Esempio: tutti gli OCR + trafilatura per pagine web
-uv sync --extra ocr-tesseract --extra ocr-rapidocr --extra ocr-surya --extra web-trafilatura
+# Completo: tutti i tool + dev
+uv sync --extra tools --dev
 
-# Esempio: sviluppo completo (tutti gli extra + dev)
-uv sync --extra structure-docling --extra structure-marker --extra structure-mineru \
-        --extra ocr-tesseract --extra ocr-rapidocr --extra ocr-paddle \
-        --extra ocr-surya --extra ocr-dots \
-        --extra math-pix2tex --extra math-nougat \
-        --extra web-trafilatura --extra research-tavily \
-        --extra dev
+# Produzione: solo tool
+uv sync --extra tools
 ```
 
-> **Nota**: gli extra OCR `rapidocr` e `math-nougat`/`math-pix2tex` competono
-> sul modulo `cv2` (OpenCV). Installa solo quelli che ti servono davvero.
+### Installare Tesseract (binario di sistema)
 
-### Installare Tesseract (sistema)
-
-L'extra `ocr-tesseract` installa solo il **wrapper Python** (`pytesseract`).
+L'extra `tools` installa `pytesseract` (wrapper Python).
 Il motore OCR vero e proprio — il **binario `tesseract`** — va installato
 separatamente a livello di sistema.
 
@@ -392,7 +368,7 @@ Tutte le impostazioni sono in `backend/.env` con prefisso `PDF2TEX_`. Copia
 | `PDF2TEX_RESEARCH_PAGE_MAX_CHARS` | `8000` | Caratteri massimi per pagina fetchata |
 | `PDF2TEX_RESEARCH_MAX_FETCH_CONCURRENCY` | `4` | Max download simultanei di pagine |
 
-> **Tutte le variabili (53)** sono elencate e commentate in [`backend/.env.example`](backend/.env.example).
+> **Tutte le variabili (59)** sono elencate e commentate in [`backend/.env.example`](backend/.env.example).
 
 ---
 
@@ -402,7 +378,8 @@ Tutte le impostazioni sono in `backend/.env` con prefisso `PDF2TEX_`. Copia
 
 ```
 backend/tests/
-├── conftest.py              # Fixture condivise (fake provider, real-llm opt-in)
+├── assets/                   # test.png, test.pdf — real test assets
+├── conftest.py              # Fixture condivise + plugin report Markdown
 ├── test_bibliography.py     # make_key, consolidate, build_bib, cited_keys
 ├── test_citation_auditor.py # audit_citations con mock LLM
 ├── test_coherence.py        # check_coherence tra capitoli
@@ -410,6 +387,7 @@ backend/tests/
 ├── test_full_graph_e2e.py   # ⭐ Test end-to-end del grafo completo
 ├── test_pipeline.py         # Registry stage/tool, default config
 ├── test_prompts.py          # Template prompt e validazione
+├── test_sandbox.py          # 🧪 11 test sandbox (OCR, math, structure, web, LLM)
 ├── test_text_cleaning.py    # Pulizia testo, dedup headers/footers
 └── test_writer_context.py   # Contesto accumulato tra sezioni
 ```
@@ -427,6 +405,35 @@ backend/tests/
 | `test_full_graph_judge_revision_fails_rollback_to_good` | Revisione non compila → rollback |
 | `test_full_graph_coherence_and_citations_disabled` | Coherence + citations off → nodi restituiscono `{}` |
 | `test_full_graph_judge_disabled_terminates_after_review` | Judge off → termina dopo review |
+
+### Test Sandbox (11 test — `@pytest.mark.sandbox`)
+
+I test sandbox verificano che tutti i motori di estrazione, OCR, matematica,
+web search e LLM funzionino correttamente con asset reali. Generano automaticamente
+un **report Markdown** (`report-sandbox.md`) con output, warning ed errori.
+
+| Categoria | Test | Engine/Tool |
+|-----------|------|-------------|
+| 🖼️ **OCR** | `ocr_tesseract`, `ocr_rapidocr` | Tesseract, RapidOCR |
+| 🧮 **Math** | `math_pix2tex` | pix2tex |
+| 📐 **Structure** | `structure_docling` | Docling |
+| 🌐 **Web** | `web_wikipedia`, `web_tavily`, `web_perplexity`, `web_agent`, `web_page_fetch` | Wikipedia, Tavily, Perplexity, Web Agent |
+| 🤖 **LLM** | `llm_fake`, `llm_real` | Fake (offline), Real (configurabile) |
+
+```bash
+# Solo test locali (no rete, no API key):
+uv run pytest tests/test_sandbox.py -v -m "sandbox and not network"
+
+# Tutti i sandbox (locali + network):
+uv run pytest tests/test_sandbox.py -v -m sandbox --runxfail
+
+# Con JUnit XML + report Markdown:
+uv run pytest tests/test_sandbox.py -m sandbox --runxfail --junitxml=report-sandbox.xml
+```
+
+> Il **report Markdown** viene generato automaticamente in `backend/report-sandbox.md`
+> ogni volta che esegui i test sandbox. Include tabella per categoria con status,
+> durata, stdout, stderr, warning ed errori.
 
 ### Come eseguire i test
 

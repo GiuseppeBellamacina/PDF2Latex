@@ -53,10 +53,10 @@ export default function PipelineGraph({ events, onNodeClick }: Props) {
   );
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-ink-200/60 bg-gradient-to-br from-ink-50 via-white to-ink-50 p-2 dark:border-ink-800/60 dark:from-ink-950 dark:via-ink-900 dark:to-ink-950">
+    <div className="overflow-x-auto rounded-xl border border-ink-200/60 bg-gradient-to-br from-ink-50 via-white to-ink-50 p-4 dark:border-ink-800/60 dark:from-ink-950 dark:via-ink-900 dark:to-ink-950">
       <svg
         viewBox={`0 0 ${svgW} ${svgH}`}
-        className="w-full min-w-[900px]"
+        className="w-full min-w-[1000px]"
         style={{ fontFamily: "system-ui, sans-serif" }}
       >
         <defs>
@@ -130,79 +130,15 @@ export default function PipelineGraph({ events, onNodeClick }: Props) {
                 }
               />
               {isActive && (
-                <>
-                  <path
-                    d={edgePath(fc, fr, tc, tr)}
-                    fill="none"
-                    stroke={COLORS.node.active.stroke}
-                    strokeWidth={2.5}
-                    strokeDasharray="8 6"
-                    className="animate-edge-march"
-                    opacity={0.7}
-                  />
-                  {[0, 1, 2].map((p) => {
-                    const pathD = edgePath(fc, fr, tc, tr);
-                    return (
-                      <g key={`p-${from}-${to}-${p}`}>
-                        <circle
-                          r={7}
-                          fill="#34D399"
-                          opacity={0}
-                          className="animate-particle-trail"
-                          style={{
-                            offsetPath: `path("${pathD}")`,
-                            animationDelay: `${p * 0.6}s`,
-                          }}
-                        />
-                        <circle
-                          r={3.5}
-                          fill="#10B981"
-                          opacity={0}
-                          className="animate-particle"
-                          style={{
-                            offsetPath: `path("${pathD}")`,
-                            animationDelay: `${p * 0.6}s`,
-                          }}
-                        />
-                      </g>
-                    );
-                  })}
-                  {/* ── Spark burst at destination ──────────────────────── */}
-                  <g transform={`translate(${cx(tc)}, ${cy(tr)})`}>
-                    {[0, 1, 2].map((burstIdx) => (
-                      <g key={`burst-${from}-${to}-${burstIdx}`}>
-                        <circle
-                          r={2.5}
-                          fill="white"
-                          opacity={0}
-                          className="animate-spark-flash"
-                          style={{ animationDelay: `${burstIdx * 0.6}s` }}
-                        />
-                        {[
-                          ["0", "#34D399"],
-                          ["60", "#6EE7B7"],
-                          ["120", "white"],
-                          ["180", "#34D399"],
-                          ["240", "#A7F3D0"],
-                          ["300", "white"],
-                        ].map(([angle, color], si) => (
-                          <circle
-                            key={`spark-${angle}`}
-                            r={si === 2 || si === 5 ? 1.3 : 2}
-                            fill={color}
-                            opacity={0}
-                            className={`animate-spark-${angle}`}
-                            style={{
-                              animationDelay: `${
-                                burstIdx * 0.6 + si * 0.04
-                              }s`,
-                            }}
-                          />
-                        ))}
-                      </g>
-                    ))}
-                  </g>
-                </>
+                <path
+                  d={edgePath(fc, fr, tc, tr)}
+                  fill="none"
+                  stroke={COLORS.node.active.stroke}
+                  strokeWidth={2.5}
+                  strokeDasharray="8 6"
+                  className="animate-edge-march"
+                  opacity={0.7}
+                />
               )}
             </g>
           );
@@ -295,11 +231,15 @@ export default function PipelineGraph({ events, onNodeClick }: Props) {
                 strokeWidth={
                   isActive ? 2.5 : isHovered && !isActive ? 2 : 1.5
                 }
-                className={
-                  isActive || isCompleted
-                    ? "animate-node-enter transition-all duration-700"
-                    : "transition-all duration-700"
-                }
+                className={`transition-all duration-700 ${
+                  isActive
+                    ? "animate-node-active-glow"
+                    : isCompleted
+                      ? "animate-node-complete-pop"
+                      : isError
+                        ? "animate-node-error-shake"
+                        : ""
+                }`}
                 style={{
                   transformOrigin: `${cx(n.col)}px ${cy(n.row)}px`,
                 }}
@@ -314,19 +254,19 @@ export default function PipelineGraph({ events, onNodeClick }: Props) {
                 className="transition-colors duration-700"
               />
               <g
-                transform={`translate(${x0(n.col) + 28}, ${y0(n.row) + NODE_H / 2})`}
+                transform={`translate(${x0(n.col) + 32}, ${y0(n.row) + NODE_H / 2})`}
               >
                 <path
                   d={NODE_ICONS[n.id] ?? ""}
                   fill={subFill}
-                  transform="translate(-8,-8) scale(0.65,0.65)"
+                  transform="translate(-8,-8) scale(0.7,0.7)"
                 />
               </g>
               <text
-                x={x0(n.col) + 52}
+                x={x0(n.col) + 56}
                 y={y0(n.row) + NODE_H / 2 + 1}
                 fill={textFill}
-                fontSize={13}
+                fontSize={14}
                 fontWeight={600}
                 dominantBaseline="middle"
                 className="transition-colors duration-700"
@@ -334,15 +274,16 @@ export default function PipelineGraph({ events, onNodeClick }: Props) {
                 {n.label}
               </text>
               {isActive && (
-                <>                  <circle cx={x0(n.col) + NODE_W - 16} cy={y0(n.row) + 14} r={5} fill={COLORS.node.active.stroke} className="animate-pulse-dot" />
-                  <circle cx={x0(n.col) + NODE_W - 16} cy={y0(n.row) + 14} r={5} fill={COLORS.node.active.stroke} opacity={0.3} className="animate-pulse-ring" />
+                <>
+                  <circle cx={x0(n.col) + NODE_W - 18} cy={y0(n.row) + 16} r={5} fill={COLORS.node.active.stroke} className="animate-pulse-dot" />
+                  <circle cx={x0(n.col) + NODE_W - 18} cy={y0(n.row) + 16} r={5} fill={COLORS.node.active.stroke} opacity={0.3} className="animate-pulse-ring" />
                 </>
               )}
               {isCompleted && (
                 <g
-                  transform={`translate(${x0(n.col) + NODE_W - 22}, ${y0(n.row) + 14})`}
+                  transform={`translate(${x0(n.col) + NODE_W - 24}, ${y0(n.row) + 16})`}
                 >
-                  <circle r={9} fill={COLORS.node.done.sub} />
+                  <circle r={10} fill={COLORS.node.done.sub} />
                   <path
                     d="M-4 0 L-1.5 3 L4 -3"
                     fill="none"
@@ -355,9 +296,9 @@ export default function PipelineGraph({ events, onNodeClick }: Props) {
               )}
               {isError && (
                 <g
-                  transform={`translate(${x0(n.col) + NODE_W - 22}, ${y0(n.row) + 14})`}
+                  transform={`translate(${x0(n.col) + NODE_W - 24}, ${y0(n.row) + 16})`}
                 >
-                  <circle r={9} fill={COLORS.node.error.stroke} />
+                  <circle r={10} fill={COLORS.node.error.stroke} />
                   <path
                     d="M-3 -3 L3 3 M-3 3 L3 -3"
                     fill="none"
@@ -521,11 +462,13 @@ export default function PipelineGraph({ events, onNodeClick }: Props) {
                     fill={chapFill}
                     stroke={chapStroke}
                     strokeWidth={isActive ? 2 : 1}
-                    className={
-                      isActive || isDone
-                        ? "animate-node-enter transition-all duration-700"
-                        : "transition-all duration-700"
-                    }
+                    className={`transition-all duration-700 ${
+                      isActive
+                        ? "animate-node-active-glow"
+                        : isDone
+                          ? "animate-node-complete-pop"
+                          : ""
+                    }`}
                     style={{
                       transformOrigin: `${chapterX(i, chapterCount) + CHAPTER_W / 2}px ${CHAPTER_START_Y + CHAPTER_H / 2}px`,
                     }}
@@ -553,10 +496,10 @@ export default function PipelineGraph({ events, onNodeClick }: Props) {
                   )}
                   <text
                     x={chapterX(i, chapterCount) + CHAPTER_W / 2}
-                    y={CHAPTER_START_Y + 16}
+                    y={CHAPTER_START_Y + 18}
                     textAnchor="middle"
                     fill={chapText}
-                    fontSize={11}
+                    fontSize={12}
                     fontWeight={600}
                     className="transition-colors duration-500"
                   >
@@ -566,8 +509,9 @@ export default function PipelineGraph({ events, onNodeClick }: Props) {
                   </text>
                   <text
                     x={chapterX(i, chapterCount) + CHAPTER_W / 2}
-                    y={CHAPTER_START_Y + 30}
-                    textAnchor="middle"                      fill={
+                    y={CHAPTER_START_Y + 33}
+                    textAnchor="middle"
+                    fill={
                       isDone ? COLORS.chapter.done.stroke : isActive ? COLORS.chapter.active.stroke : COLORS.node.pending.sub
                     }
                     fontSize={10}

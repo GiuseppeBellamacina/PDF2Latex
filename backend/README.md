@@ -14,7 +14,7 @@ extract (PyMuPDF) -> analyze (fan-out per PDF) -> plan (global structure)
 
 ```pwsh
 uv sync                 # core deps
-uv sync --extra ocr     # optional OCR fallback (pytesseract)
+uv sync --extra tools   # Docling, OCR, math, web, research
 copy .env.example .env  # configure PDF2TEX_* variables
 uv run python -m app.main
 ```

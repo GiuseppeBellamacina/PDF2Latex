@@ -2,7 +2,7 @@
 
 import enum
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
@@ -121,6 +121,14 @@ class Project(Base):
     web_tool_ids = Column(JSON, nullable=True)
     # Max web search queries for research mode. NULL = unlimited (free tools).
     research_max_queries = Column(Integer, nullable=True)
+    # Max planner→fetch→evaluate loops for the Web Agent (default 3).
+    web_agent_max_iterations = Column(Integer, default=3, nullable=False)
+    # Optional dedicated LLM for the Web Agent (researcher role).
+    # When NULL the project's main LLM is used for web research.
+    web_agent_provider_id = Column(
+        Integer, ForeignKey("provider_configs.id"), nullable=True
+    )
+    web_agent_model = Column(String(100), nullable=True)
 
     output_tex_path = Column(String(512), nullable=True)
     output_pdf_path = Column(String(512), nullable=True)
@@ -130,8 +138,12 @@ class Project(Base):
     total_sections = Column(Integer, default=0)
     completed_sections = Column(Integer, default=0)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
     sources = relationship(
         "Source", back_populates="project", cascade="all, delete-orphan"
@@ -240,7 +252,7 @@ class ProviderConfig(Base):
     default_model = Column(String(100), nullable=True)
     params = Column(JSON, nullable=True)  # temperature, max_tokens, top_p, etc.
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class WebToolConfig(Base):
@@ -260,4 +272,4 @@ class WebToolConfig(Base):
     base_url = Column(String(512), nullable=True)
     params = Column(JSON, nullable=True)  # max_results, search_depth, language, etc.
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))

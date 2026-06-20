@@ -8,13 +8,17 @@ import {
   Pencil,
   Plus,
   Search,
-  Settings2,
   Trash2,
   X,
   Zap,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { api, type Provider, type ProviderInput, type WebToolInput } from "../lib/api";
+import {
+  api,
+  type Provider,
+  type ProviderInput,
+  type WebToolInput,
+} from "../lib/api";
 import { cn } from "../lib/utils";
 import { PROVIDER_COLORS, PROVIDER_ICONS } from "../lib/providerIcons";
 import { useAppStore } from "../stores/appStore";
@@ -22,32 +26,73 @@ import { useAppStore } from "../stores/appStore";
 type TestResult = Awaited<ReturnType<typeof api.testProvider>>;
 
 const PROVIDER_TYPES = [
-  "openai", "anthropic", "ollama", "custom", "fake",
-  "deepseek", "nvidia", "openrouter", "grok", "alibaba",
-  "together", "groq", "mistral",
+  "openai",
+  "anthropic",
+  "ollama",
+  "custom",
+  "fake",
+  "deepseek",
+  "nvidia",
+  "openrouter",
+  "grok",
+  "alibaba",
+  "together",
+  "groq",
+  "mistral",
 ] as const;
-const WEB_TOOL_TYPES = ["tavily", "perplexity", "wikipedia", "web_agent"] as const;
+const WEB_TOOL_TYPES = ["tavily", "perplexity", "arxiv"] as const;
 
 const KNOWN_MODELS: Record<string, string[]> = {
   openai: [
-    "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo",
-    "o1", "o1-mini", "o3-mini",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-4-turbo",
+    "gpt-4",
+    "gpt-3.5-turbo",
+    "o1",
+    "o1-mini",
+    "o3-mini",
   ],
   anthropic: [
-    "claude-3-5-sonnet-20241022", "claude-3-opus-20240229",
-    "claude-3-haiku-20240307", "claude-3-sonnet-20240229",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-opus-20240229",
+    "claude-3-haiku-20240307",
+    "claude-3-sonnet-20240229",
   ],
   ollama: ["llama3", "llama3.1", "mistral", "codellama", "gemma2", "phi3"],
   custom: [],
   fake: [],
   deepseek: ["deepseek-chat", "deepseek-reasoner"],
-  nvidia: ["meta/llama-3.3-70b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct", "mistralai/mistral-large"],
-  openrouter: ["openai/gpt-4o", "anthropic/claude-3.5-sonnet", "google/gemini-2.0-flash", "meta-llama/llama-3.3-70b-instruct"],
+  nvidia: [
+    "meta/llama-3.3-70b-instruct",
+    "nvidia/llama-3.1-nemotron-70b-instruct",
+    "mistralai/mistral-large",
+  ],
+  openrouter: [
+    "openai/gpt-4o",
+    "anthropic/claude-3.5-sonnet",
+    "google/gemini-2.0-flash",
+    "meta-llama/llama-3.3-70b-instruct",
+  ],
   grok: ["grok-2", "grok-2-vision"],
   alibaba: ["qwen-max", "qwen-plus", "qwen-turbo", "qwen-vl-max"],
-  together: ["meta-llama/Llama-3.3-70B-Instruct-Turbo", "mistralai/Mixtral-8x7B-Instruct-v0.1", "Qwen/Qwen2.5-72B-Instruct"],
-  groq: ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it", "deepseek-r1-distill-llama-70b"],
-  mistral: ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "codestral-latest"],
+  together: [
+    "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "mistralai/Mixtral-8x7B-Instruct-v0.1",
+    "Qwen/Qwen2.5-72B-Instruct",
+  ],
+  groq: [
+    "llama-3.3-70b-versatile",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it",
+    "deepseek-r1-distill-llama-70b",
+  ],
+  mistral: [
+    "mistral-large-latest",
+    "mistral-medium-latest",
+    "mistral-small-latest",
+    "codestral-latest",
+  ],
 };
 
 const DEFAULT_BASE_URLS: Record<string, string> = {
@@ -64,8 +109,7 @@ const DEFAULT_BASE_URLS: Record<string, string> = {
 const WEBTOOL_HINTS: Record<string, string> = {
   tavily: "https://tavily.com — API key required",
   perplexity: "https://docs.perplexity.ai — API key required",
-  wikipedia: "https://wikipedia.org — Free, no API key",
-  web_agent: "Agentic search — LLM iteratively plans URLs, fetches and evaluates results",
+  arxiv: "https://arxiv.org — No API key needed (academic paper search)",
 };
 
 const EMPTY: ProviderInput = {
@@ -79,7 +123,7 @@ const EMPTY: ProviderInput = {
 
 const EMPTY_WEBTOOL: WebToolInput = {
   name: "",
-  tool_type: "wikipedia",
+  tool_type: "tavily",
   api_key: "",
   base_url: "",
   is_active: true,
@@ -89,10 +133,6 @@ export default function SettingsPage() {
   const { providers, webTools, loadProviders, loadWebTools } = useAppStore();
   const [form, setForm] = useState<ProviderInput>(EMPTY);
   const [webToolForm, setWebToolForm] = useState<WebToolInput>(EMPTY_WEBTOOL);
-  const [webAgentMaxIterations, setWebAgentMaxIterations] = useState(3);
-  const [webAgentProviderId, setWebAgentProviderId] = useState<number | null>(null);
-  const [webAgentModel, setWebAgentModel] = useState("");
-  const [webAgentSearchToolIds, setWebAgentSearchToolIds] = useState<Set<number>>(new Set());
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -109,7 +149,10 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!modelOpen) return;
     function handleClick(e: MouseEvent) {
-      if (modelDropdownRef.current && !modelDropdownRef.current.contains(e.target as Node)) {
+      if (
+        modelDropdownRef.current &&
+        !modelDropdownRef.current.contains(e.target as Node)
+      ) {
         setModelOpen(false);
       }
     }
@@ -118,9 +161,13 @@ export default function SettingsPage() {
   }, [modelOpen]);
 
   // All providers need an API key except local Ollama and offline Fake.
-  const needsKey = form.provider_type !== "ollama" && form.provider_type !== "fake";
+  const needsKey =
+    form.provider_type !== "ollama" && form.provider_type !== "fake";
   // Providers that don't have a hardcoded SDK default need a base_url.
-  const needsUrl = form.provider_type !== "openai" && form.provider_type !== "anthropic" && form.provider_type !== "fake";
+  const needsUrl =
+    form.provider_type !== "openai" &&
+    form.provider_type !== "anthropic" &&
+    form.provider_type !== "fake";
   const typeModels = KNOWN_MODELS[form.provider_type] ?? [];
   const hasKnownModels = typeModels.length > 0;
 
@@ -174,7 +221,10 @@ export default function SettingsPage() {
     setBusy(true);
     try {
       const { api_key, ...rest } = editForm;
-      const payload: Partial<ProviderInput> = { ...rest, ...(api_key ? { api_key } : {}) };
+      const payload: Partial<ProviderInput> = {
+        ...rest,
+        ...(api_key ? { api_key } : {}),
+      };
       await api.updateProvider(editingId, payload);
       setEditingId(null);
       loadProviders();
@@ -192,40 +242,8 @@ export default function SettingsPage() {
   async function createWeb() {
     setBusy(true);
     try {
-      const payload = { ...webToolForm };
-      if (webToolForm.tool_type === "web_agent") {
-        const params: Record<string, unknown> = {
-          max_iterations: webAgentMaxIterations,
-        };
-        if (webAgentProviderId) {
-          const provider = providers.find((p) => p.id === webAgentProviderId);
-          if (provider) {
-            params.llm_config = {
-              provider: provider.provider_type,
-              model: webAgentModel || provider.default_model || "",
-              ...(provider.base_url ? { base_url: provider.base_url } : {}),
-            };
-          }
-        } else if (webAgentModel) {
-          params.llm_config = { model: webAgentModel };
-        }
-        if (webAgentSearchToolIds.size > 0) {
-          params.search_tools = webTools
-            .filter((t) => webAgentSearchToolIds.has(t.id) && t.tool_type !== "web_agent")
-            .map((t) => ({
-              tool_type: t.tool_type,
-              ...(t.base_url ? { base_url: t.base_url } : {}),
-              ...(t.params ? { params: t.params } : {}),
-            }));
-        }
-        payload.params = params;
-      }
-      await api.createWebTool(payload);
+      await api.createWebTool(webToolForm);
       setWebToolForm(EMPTY_WEBTOOL);
-      setWebAgentMaxIterations(3);
-      setWebAgentProviderId(null);
-      setWebAgentModel("");
-      setWebAgentSearchToolIds(new Set());
       loadWebTools();
     } finally {
       setBusy(false);
@@ -243,7 +261,8 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">LLM Providers</h1>
         <p className="mt-1 text-sm text-ink-500">
-          API keys are stored encrypted. Use <em className="font-mono text-ink-400">fake</em> to try it offline.
+          API keys are stored encrypted. Use{" "}
+          <em className="font-mono text-ink-400">fake</em> to try it offline.
         </p>
       </div>
 
@@ -256,7 +275,9 @@ export default function SettingsPage() {
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
-            <label className="mb-1 block text-xs font-medium text-ink-500">Name</label>
+            <label className="mb-1 block text-xs font-medium text-ink-500">
+              Name
+            </label>
             <input
               className="input"
               value={form.name}
@@ -265,12 +286,19 @@ export default function SettingsPage() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-ink-500">Type</label>
+            <label className="mb-1 block text-xs font-medium text-ink-500">
+              Type
+            </label>
             <ProviderTypeSelect
               value={form.provider_type}
               onChange={(t) => {
                 const defaultUrl = DEFAULT_BASE_URLS[t] ?? "";
-                setForm({ ...form, provider_type: t, default_model: "", base_url: defaultUrl });
+                setForm({
+                  ...form,
+                  provider_type: t,
+                  default_model: "",
+                  base_url: defaultUrl,
+                });
                 setModelOpen(false);
               }}
             />
@@ -281,15 +309,21 @@ export default function SettingsPage() {
             <label className="mb-1 block text-xs font-medium text-ink-500">
               Default model
               {hasKnownModels && (
-                <span className="ml-1 text-ink-400">— click for suggestions</span>
+                <span className="ml-1 text-ink-400">
+                  — click for suggestions
+                </span>
               )}
             </label>
             <div className="relative">
               <input
                 className="input w-full pr-8"
                 value={form.default_model ?? ""}
-                onChange={(e) => setForm({ ...form, default_model: e.target.value })}
-                onClick={() => hasKnownModels && !modelOpen && setModelOpen(true)}
+                onChange={(e) =>
+                  setForm({ ...form, default_model: e.target.value })
+                }
+                onClick={() =>
+                  hasKnownModels && !modelOpen && setModelOpen(true)
+                }
                 placeholder={
                   hasKnownModels
                     ? `e.g. ${typeModels[0]}`
@@ -303,7 +337,13 @@ export default function SettingsPage() {
                   onClick={() => setModelOpen((o) => !o)}
                   tabIndex={-1}
                 >
-                  <ChevronDown size={16} className={cn("transition-transform", modelOpen && "rotate-180")} />
+                  <ChevronDown
+                    size={16}
+                    className={cn(
+                      "transition-transform",
+                      modelOpen && "rotate-180",
+                    )}
+                  />
                 </button>
               )}
             </div>
@@ -336,7 +376,9 @@ export default function SettingsPage() {
 
           {needsUrl && (
             <div>
-              <label className="mb-1 block text-xs font-medium text-ink-500">Base URL</label>
+              <label className="mb-1 block text-xs font-medium text-ink-500">
+                Base URL
+              </label>
               <input
                 className="input"
                 value={form.base_url ?? ""}
@@ -347,7 +389,9 @@ export default function SettingsPage() {
           )}
           {needsKey && (
             <div className={needsUrl ? "" : "sm:col-span-2"}>
-              <label className="mb-1 block text-xs font-medium text-ink-500">API Key</label>
+              <label className="mb-1 block text-xs font-medium text-ink-500">
+                API Key
+              </label>
               <input
                 type="password"
                 className="input"
@@ -398,48 +442,80 @@ export default function SettingsPage() {
                 </div>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div>
-                    <label className="mb-1 block text-xs font-medium text-ink-500">Name</label>
+                    <label className="mb-1 block text-xs font-medium text-ink-500">
+                      Name
+                    </label>
                     <input
                       className="input text-sm"
                       value={editForm.name}
-                      onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                      onChange={(e) =>
+                        setEditForm({ ...editForm, name: e.target.value })
+                      }
                     />
                   </div>
                   <div>
-                    <label className="mb-1 block text-xs font-medium text-ink-500">Default model</label>
+                    <label className="mb-1 block text-xs font-medium text-ink-500">
+                      Default model
+                    </label>
                     <input
                       className="input text-sm"
                       value={editForm.default_model ?? ""}
-                      onChange={(e) => setEditForm({ ...editForm, default_model: e.target.value })}
+                      onChange={(e) =>
+                        setEditForm({
+                          ...editForm,
+                          default_model: e.target.value,
+                        })
+                      }
                     />
                   </div>
-                  {p.provider_type !== "openai" && p.provider_type !== "anthropic" && p.provider_type !== "fake" && (
-                    <div>
-                      <label className="mb-1 block text-xs font-medium text-ink-500">Base URL</label>
-                      <input
-                        className="input text-sm"
-                        value={editForm.base_url ?? ""}
-                        onChange={(e) => setEditForm({ ...editForm, base_url: e.target.value })}
-                      />
-                    </div>
-                  )}
+                  {p.provider_type !== "openai" &&
+                    p.provider_type !== "anthropic" &&
+                    p.provider_type !== "fake" && (
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-ink-500">
+                          Base URL
+                        </label>
+                        <input
+                          className="input text-sm"
+                          value={editForm.base_url ?? ""}
+                          onChange={(e) =>
+                            setEditForm({
+                              ...editForm,
+                              base_url: e.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                    )}
                   <div>
                     <label className="mb-1 block text-xs font-medium text-ink-500">
-                      New API key <span className="text-ink-400">(leave empty to keep current)</span>
+                      New API key{" "}
+                      <span className="text-ink-400">
+                        (leave empty to keep current)
+                      </span>
                     </label>
                     <input
                       type="password"
                       className="input text-sm"
                       value={editForm.api_key ?? ""}
-                      onChange={(e) => setEditForm({ ...editForm, api_key: e.target.value })}
+                      onChange={(e) =>
+                        setEditForm({ ...editForm, api_key: e.target.value })
+                      }
                     />
                   </div>
                 </div>
                 <div className="mt-3 flex gap-2">
-                  <button className="btn-primary text-xs" onClick={saveEdit} disabled={busy}>
+                  <button
+                    className="btn-primary text-xs"
+                    onClick={saveEdit}
+                    disabled={busy}
+                  >
                     <Check size={14} /> Save
                   </button>
-                  <button className="btn-ghost text-xs" onClick={() => setEditingId(null)}>
+                  <button
+                    className="btn-ghost text-xs"
+                    onClick={() => setEditingId(null)}
+                  >
                     Cancel
                   </button>
                 </div>
@@ -453,7 +529,12 @@ export default function SettingsPage() {
               className="group flex items-center gap-4 rounded-xl border border-ink-200 bg-white px-4 py-3 transition-shadow hover:shadow-sm dark:border-ink-800 dark:bg-ink-950"
             >
               {/* Provider icon */}
-              <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-lg", iconBg)}>
+              <div
+                className={cn(
+                  "flex h-10 w-10 shrink-0 items-center justify-center rounded-lg",
+                  iconBg,
+                )}
+              >
                 <Icon size={18} />
               </div>
 
@@ -476,7 +557,11 @@ export default function SettingsPage() {
                   <span className="capitalize">{p.provider_type}</span>
                   {p.default_model && ` · ${p.default_model}`}
                   {p.base_url && ` · ${p.base_url}`}
-                  {p.has_api_key && <span className="ml-1" title="API key set">· 🔑</span>}
+                  {p.has_api_key && (
+                    <span className="ml-1" title="API key set">
+                      · 🔑
+                    </span>
+                  )}
                 </p>
               </div>
 
@@ -494,7 +579,10 @@ export default function SettingsPage() {
                   onClick={() => startEditing(p)}
                   title="Edit"
                 >
-                  <Pencil size={14} className="opacity-50 group-hover:opacity-100" />
+                  <Pencil
+                    size={14}
+                    className="opacity-50 group-hover:opacity-100"
+                  />
                 </button>
                 <button
                   className="btn-ghost h-9 w-9 p-0 text-red-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/30 dark:hover:text-red-400"
@@ -516,8 +604,8 @@ export default function SettingsPage() {
           Web search tools
         </h2>
         <p className="mt-1 text-sm text-ink-500">
-          Configure search engines for research-based generation. Wikipedia is free;
-          Tavily &amp; Perplexity need API keys.
+          Wikipedia and Web Agent are always available. Add Tavily or
+          Perplexity for broader search coverage — they require API keys.
         </p>
       </div>
 
@@ -528,16 +616,22 @@ export default function SettingsPage() {
         </h3>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
-            <label className="mb-1 block text-xs font-medium text-ink-500">Name</label>
+            <label className="mb-1 block text-xs font-medium text-ink-500">
+              Name
+            </label>
             <input
               className="input"
               value={webToolForm.name}
-              onChange={(e) => setWebToolForm({ ...webToolForm, name: e.target.value })}
-              placeholder="e.g. Wikipedia EN"
+              onChange={(e) =>
+                setWebToolForm({ ...webToolForm, name: e.target.value })
+              }
+              placeholder="e.g. Tavily"
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-ink-500">Type</label>
+            <label className="mb-1 block text-xs font-medium text-ink-500">
+              Type
+            </label>
             <select
               className="input"
               value={webToolForm.tool_type}
@@ -546,7 +640,9 @@ export default function SettingsPage() {
               }
             >
               {WEB_TOOL_TYPES.map((t) => (
-                <option key={t} value={t}>{t}</option>
+                <option key={t} value={t}>
+                  {t}
+                </option>
               ))}
             </select>
             <p className="mt-1 text-[11px] text-ink-400">
@@ -554,10 +650,11 @@ export default function SettingsPage() {
             </p>
           </div>
           {(webToolForm.tool_type === "tavily" ||
-            webToolForm.tool_type === "perplexity" ||
-            webToolForm.tool_type === "web_agent") && (
+            webToolForm.tool_type === "perplexity") && (
             <div>
-              <label className="mb-1 block text-xs font-medium text-ink-500">API Key</label>
+              <label className="mb-1 block text-xs font-medium text-ink-500">
+                API Key
+              </label>
               <input
                 type="password"
                 className="input"
@@ -568,128 +665,6 @@ export default function SettingsPage() {
                 placeholder="tvly-… / pplx-…"
               />
             </div>
-          )}
-          {webToolForm.tool_type === "web_agent" && (
-            <>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-ink-500">Base URL</label>
-                <input
-                  className="input"
-                  value={webToolForm.base_url ?? ""}
-                  onChange={(e) =>
-                    setWebToolForm({ ...webToolForm, base_url: e.target.value })
-                  }
-                  placeholder="https://api.example.com/search"
-                />
-              </div>
-              <div className="col-span-full mt-2 rounded-lg border border-dashed border-emerald-300/60 bg-emerald-50/30 p-4 dark:border-emerald-700/40 dark:bg-emerald-950/10">
-                <p className="mb-3 flex items-center gap-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
-                  <Settings2 size={14} />
-                  Web Agent settings
-                </p>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                  <div>
-                    <label className="mb-1 block text-[11px] font-medium text-ink-500">
-                      Max iterations
-                    </label>
-                    <input
-                      type="number"
-                      className="input"
-                      min={1}
-                      max={10}
-                      value={webAgentMaxIterations}
-                      onChange={(e) =>
-                        setWebAgentMaxIterations(Math.max(1, Math.min(10, Number(e.target.value) || 3)))
-                      }
-                    />
-                    <p className="mt-0.5 text-[10px] text-ink-400">
-                      How many planner→fetch→evaluate loops (1-10)
-                    </p>
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] font-medium text-ink-500">
-                      LLM Provider{" "}
-                      <span className="font-normal text-ink-400">— optional</span>
-                    </label>
-                    <select
-                      className="input"
-                      value={webAgentProviderId ?? ""}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setWebAgentProviderId(v ? Number(v) : null);
-                      }}
-                    >
-                      <option value="">Use project default</option>
-                      {providers.filter((p) => p.is_active).map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} ({p.provider_type})
-                        </option>
-                      ))}
-                    </select>
-                    <p className="mt-0.5 text-[10px] text-ink-400">
-                      Dedicated LLM for the agent; falls back to project default
-                    </p>
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] font-medium text-ink-500">
-                      Model override{" "}
-                      <span className="font-normal text-ink-400">— optional</span>
-                    </label>
-                    <input
-                      className="input"
-                      value={webAgentModel}
-                      onChange={(e) => setWebAgentModel(e.target.value)}
-                      placeholder="e.g. gpt-4o-mini"
-                    />
-                    <p className="mt-0.5 text-[10px] text-ink-400">
-                      Override the provider's default model for the agent
-                    </p>
-                  </div>
-                </div>
-                {/* Search engine sources */}
-                {webTools.filter((t) => t.tool_type !== "web_agent" && t.is_active).length > 0 && (
-                  <div className="mt-3">
-                    <label className="mb-1.5 block text-[11px] font-medium text-ink-500">
-                      Search engine sources{" "}
-                      <span className="font-normal text-ink-400">— optional, select one or more</span>
-                    </label>
-                    <div className="flex flex-wrap gap-1.5">
-                      {webTools.filter((t) => t.tool_type !== "web_agent" && t.is_active).map((t) => {
-                        const selected = webAgentSearchToolIds.has(t.id);
-                        return (
-                          <button
-                            key={t.id}
-                            type="button"
-                            onClick={() => {
-                              const next = new Set(webAgentSearchToolIds);
-                              if (selected) next.delete(t.id);
-                              else next.add(t.id);
-                              setWebAgentSearchToolIds(next);
-                            }}
-                            className={cn(
-                              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-all",
-                              selected
-                                ? "border-emerald-400 bg-emerald-100 text-emerald-700 dark:border-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-300"
-                                : "border-ink-200 bg-white text-ink-500 hover:border-ink-300 dark:border-ink-700 dark:bg-ink-900 dark:hover:border-ink-600",
-                            )}
-                          >
-                            {selected && (
-                              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="shrink-0">
-                                <path d="M2 5L4 7L8 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                              </svg>
-                            )}
-                            {t.name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <p className="mt-1 text-[10px] text-ink-400">
-                      Selected engines are queried first to seed URLs before the LLM planner runs
-                    </p>
-                  </div>
-                )}
-              </div>
-            </>
           )}
         </div>
 
@@ -720,9 +695,6 @@ export default function SettingsPage() {
                 {t.base_url && ` · ${t.base_url}`}
                 {t.has_api_key && <span className="ml-1">· 🔑</span>}
               </p>
-              {t.tool_type === "web_agent" && t.params && (
-                <WebAgentParamsLine params={t.params} />
-              )}
             </div>
             <div className="flex items-center gap-2">
               <span className="text-ink-400">
@@ -739,7 +711,7 @@ export default function SettingsPage() {
         ))}
         {webTools.length === 0 && (
           <p className="rounded-xl border border-dashed border-ink-200 px-4 py-6 text-center text-sm text-ink-400 dark:border-ink-800">
-            No web tools yet. Add Wikipedia for free web research.
+            No search tools added yet. Add Tavily or Perplexity for broader coverage.
           </p>
         )}
       </div>
@@ -760,7 +732,8 @@ function ProviderTypeSelect({
   useEffect(() => {
     if (!open) return;
     function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node))
+        setOpen(false);
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
@@ -827,43 +800,6 @@ function ProviderTypeSelect({
         </div>
       )}
     </div>
-  );
-}
-
-function WebAgentParamsLine({ params }: { params: Record<string, unknown> }) {
-  const maxIter = params.max_iterations as number | undefined;
-  const llmCfg = params.llm_config as
-    | { provider?: string; model?: string; base_url?: string }
-    | undefined;
-  const searchTools = params.search_tools as
-    | { tool_type: string }[]
-    | undefined;
-
-  const parts: string[] = [];
-  if (maxIter != null) parts.push(`${maxIter} iter`);
-  if (llmCfg) {
-    const bits: string[] = [];
-    if (llmCfg.provider) bits.push(llmCfg.provider);
-    if (llmCfg.model) bits.push(llmCfg.model);
-    if (bits.length) parts.push(bits.join(" · "));
-  }
-  if (searchTools?.length) {
-    parts.push(searchTools.map((s) => s.tool_type).join(", "));
-  }
-
-  if (parts.length === 0) return null;
-  return (
-    <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-emerald-600 dark:text-emerald-400">
-      <Settings2 size={10} className="shrink-0" />
-      {parts.map((p, i) => (
-        <span
-          key={i}
-          className="rounded-full bg-emerald-100 px-1.5 py-px dark:bg-emerald-900/30"
-        >
-          {p}
-        </span>
-      ))}
-    </p>
   );
 }
 

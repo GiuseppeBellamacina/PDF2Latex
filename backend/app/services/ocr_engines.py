@@ -9,9 +9,6 @@ Supported engines (all local & free):
 
 * ``tesseract``  — classic OCR via the system binary (``pytesseract``).
 * ``rapidocr``   — ONNX multilingual OCR, no system binary.
-* ``paddleocr``  — accurate OCR with layout detection (GPU-friendly).
-* ``surya``      — transformer OCR for hard layouts (GPU).
-* ``dots_ocr``   — compact VLM doing OCR + layout (GPU).
 
 The selected engine is chosen per project via the pipeline config; this module
 only knows how to *run* a given engine id.
@@ -36,9 +33,6 @@ def engine_available(engine: str) -> bool:
     mod = {
         "tesseract": "pytesseract",
         "rapidocr": "rapidocr_onnxruntime",
-        "paddleocr": "paddleocr",
-        "surya": "surya",
-        "dots_ocr": "transformers",
     }.get(engine)
     if not mod:
         return False
@@ -50,15 +44,10 @@ def engine_available(engine: str) -> bool:
 
 def best_available_ocr() -> str | None:
     """Return the best OCR engine actually installed (preference order)."""
-    for engine in ("paddleocr", "rapidocr", "surya", "tesseract"):
+    for engine in ("rapidocr", "tesseract"):
         if engine_available(engine):
             return engine
     return None
-
-
-# --------------------------------------------------------------------------- #
-# Per-engine runners                                                            #
-# --------------------------------------------------------------------------- #
 
 
 def _rapidocr(img_path: Path) -> str:
@@ -84,135 +73,6 @@ def _rapidocr(img_path: Path) -> str:
         return ""
 
 
-def _paddleocr(img_path: Path, lang: str) -> str:
-    eng = _ENGINES.get("paddleocr", "missing")
-    if eng == "missing":
-        try:
-            from paddleocr import PaddleOCR  # type: ignore
-
-            eng = PaddleOCR(use_angle_cls=True, lang=_paddle_lang(lang), show_log=False)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("PaddleOCR non inizializzabile: %s", exc)
-            eng = None
-        _ENGINES["paddleocr"] = eng
-    if eng is None:
-        return ""
-    try:
-        result = eng.ocr(str(img_path), cls=True)
-        lines: list[str] = []
-        for page in result or []:
-            for entry in page or []:
-                if len(entry) > 1 and entry[1]:
-                    lines.append(str(entry[1][0]))
-        return "\n".join(lines).strip()
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("PaddleOCR fallito su %s: %s", img_path.name, exc)
-        return ""
-
-
-def _paddle_lang(lang: str) -> str:
-    """Map a tesseract-style language string to a PaddleOCR language code."""
-    first = lang.split("+")[0].strip().lower()
-    return {
-        "ita": "it",
-        "eng": "en",
-        "fra": "fr",
-        "deu": "german",
-        "spa": "es",
-        "por": "pt",
-    }.get(first, "en")
-
-
-def _surya(img_path: Path, lang: str) -> str:
-    eng = _ENGINES.get("surya", "missing")
-    if eng == "missing":
-        try:
-            from surya.model.detection.model import (  # type: ignore
-                load_model as load_det,
-            )
-            from surya.model.detection.model import (
-                load_processor as load_det_proc,
-            )
-            from surya.model.recognition.model import (  # type: ignore
-                load_model as load_rec,
-            )
-            from surya.model.recognition.processor import (  # type: ignore
-                load_processor as load_rec_proc,
-            )
-
-            eng = {
-                "det_model": load_det(),
-                "det_proc": load_det_proc(),
-                "rec_model": load_rec(),
-                "rec_proc": load_rec_proc(),
-            }
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Surya non inizializzabile: %s", exc)
-            eng = None
-        _ENGINES["surya"] = eng
-    if eng is None:
-        return ""
-    try:
-        from PIL import Image
-        from surya.ocr import run_ocr as surya_run  # type: ignore
-
-        with Image.open(img_path) as im:
-            image = im.convert("RGB")
-        langs = [c.strip() for c in lang.split("+") if c.strip()] or ["en"]
-        preds = surya_run(
-            [image],
-            [langs],
-            eng["det_model"],
-            eng["det_proc"],
-            eng["rec_model"],
-            eng["rec_proc"],
-        )
-        if not preds:
-            return ""
-        return "\n".join(line.text for line in preds[0].text_lines if line.text).strip()
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Surya fallito su %s: %s", img_path.name, exc)
-        return ""
-
-
-def _dots_ocr(img_path: Path) -> str:
-    eng = _ENGINES.get("dots_ocr", "missing")
-    if eng == "missing":
-        try:
-            from transformers import AutoModelForCausalLM, AutoProcessor  # type: ignore
-
-            model_id = settings.dots_ocr_model
-            eng = {
-                "model": AutoModelForCausalLM.from_pretrained(
-                    model_id, trust_remote_code=True, device_map="auto"
-                ),
-                "processor": AutoProcessor.from_pretrained(
-                    model_id, trust_remote_code=True
-                ),
-            }
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("dots.ocr non inizializzabile: %s", exc)
-            eng = None
-        _ENGINES["dots_ocr"] = eng
-    if eng is None:
-        return ""
-    try:
-        from PIL import Image
-
-        with Image.open(img_path) as im:
-            image = im.convert("RGB")
-        proc = eng["processor"]
-        model = eng["model"]
-        prompt = "Extract the text from the image."
-        inputs = proc(text=prompt, images=image, return_tensors="pt").to(model.device)
-        out = model.generate(**inputs, max_new_tokens=1024)
-        text = proc.batch_decode(out, skip_special_tokens=True)
-        return (text[0] if text else "").strip()
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("dots.ocr fallito su %s: %s", img_path.name, exc)
-        return ""
-
-
 def _tesseract(img_path: Path, lang: str) -> str:
     # Reuse the resolved-binary logic in extractor to avoid duplication.
     from app.services.extractor import tesseract_available
@@ -233,9 +93,6 @@ def _tesseract(img_path: Path, lang: str) -> str:
 _RUNNERS = {
     "tesseract": lambda p, lang: _tesseract(p, lang),
     "rapidocr": lambda p, lang: _rapidocr(p),
-    "paddleocr": lambda p, lang: _paddleocr(p, lang),
-    "surya": lambda p, lang: _surya(p, lang),
-    "dots_ocr": lambda p, lang: _dots_ocr(p),
 }
 
 

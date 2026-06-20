@@ -1,10 +1,9 @@
-"""Tests for pipeline config: normalize, default, describe, stage_tool."""
+"""Tests for pipeline config: normalize, default, describe."""
 
 from app.services.pipeline import (
     default_pipeline_config,
     describe_pipeline,
     normalize_pipeline_config,
-    stage_tool,
 )
 
 
@@ -94,16 +93,17 @@ def test_describe_pipeline_with_custom_config():
     assert math["selected"] == "none"
 
 
-def test_stage_tool_with_valid_config():
-    """stage_tool returns the selected tool for a stage."""
-    cfg = {"ocr": "rapidocr"}
-    assert stage_tool(cfg, "ocr") == "rapidocr"
-    assert stage_tool(cfg, "text") == "pymupdf"  # default
+def test_normalize_resolves_tool_selection():
+    """normalize returns the selected tool for each stage."""
+    cfg = normalize_pipeline_config({"ocr": "rapidocr"})
+    assert cfg["ocr"] == "rapidocr"
+    assert cfg["text"] == "pymupdf"  # default
 
 
-def test_stage_tool_unknown_stage():
-    """stage_tool returns 'none' for unknown stage id."""
-    assert stage_tool({}, "bogus") == "none"
+def test_normalize_unknown_stage_not_present():
+    """Unknown stage keys are dropped from the result."""
+    cfg = normalize_pipeline_config({"bogus": "value"})
+    assert "bogus" not in cfg
 
 
 def test_pipeline_config_idempotent():

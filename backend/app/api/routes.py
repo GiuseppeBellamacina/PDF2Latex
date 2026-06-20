@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse
@@ -62,6 +63,50 @@ from app.services.refine import refine_section
 from app.services.regenerate import regenerate_section
 from app.services.rejudge import rejudge_project
 from app.services.runner import build_llm_config
+
+# ── URL validation for web research sources ─────────────────────────────
+# Allowed URL schemes (block file://, ftp://, etc.).
+_ALLOWED_URL_SCHEMES = {"http", "https"}
+# Block access to localhost and private/internal networks.
+_BLOCKED_HOSTS = {
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "[::1]",
+}
+# Block private IPv4 ranges (10.x, 172.16-31.x, 192.168.x), link-local
+# (169.254.x), loopback (127.x), and IPv6 private/link-local.
+_PRIVATE_NETS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+
+def _validate_url(url: str) -> str:
+    """Validate that a URL uses http(s) only and doesn't target local/private hosts."""
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in _ALLOWED_URL_SCHEMES:
+        raise HTTPException(400, f"Schema URL non supportato: {parsed.scheme}")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise HTTPException(400, "URL senza host riconoscibile")
+    if host in _BLOCKED_HOSTS:
+        raise HTTPException(400, "URL verso host locale non consentito")
+    try:
+        addr = ipaddress.ip_address(host)
+        for net in _PRIVATE_NETS:
+            if addr in net:
+                raise HTTPException(400, "URL verso rete privata non consentito")
+    except ValueError:
+        pass  # not an IP address, skip IP checks
+    return parsed.geturl()
+
 
 router = APIRouter()
 
@@ -208,12 +253,44 @@ def _web_tool_out(p: WebToolConfig) -> WebToolOut:
 
 @router.get("/webtools", response_model=list[WebToolOut])
 async def list_web_tools(db: AsyncSession = Depends(get_db)):
-    rows = (await db.execute(select(WebToolConfig))).scalars().all()
+    """List user-configurable web tools (excludes Wikipedia & Web Agent).
+
+    Wikipedia and Web Agent are always available when research mode is enabled;
+    they do not need to be created or appear in the UI.
+    """
+    rows = (
+        (
+            await db.execute(
+                select(WebToolConfig).where(
+                    WebToolConfig.tool_type.notin_(["wikipedia", "web_agent", "arxiv"])
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [_web_tool_out(p) for p in rows]
 
 
 @router.post("/webtools", response_model=WebToolOut)
 async def create_web_tool(payload: WebToolCreate, db: AsyncSession = Depends(get_db)):
+    if payload.tool_type in ("wikipedia", "web_agent", "arxiv"):
+        raise HTTPException(
+            400,
+            "Wikipedia, Web Agent and Arxiv are always available — "
+            "they cannot be created manually.",
+        )
+    # Prevent duplicate tool_type entries (e.g., two Tavily tools).
+    existing = (
+        await db.execute(
+            select(WebToolConfig).where(WebToolConfig.tool_type == payload.tool_type)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(
+            409,
+            f"Un web tool di tipo '{payload.tool_type}' esiste già.",
+        )
     tool = WebToolConfig(
         name=payload.name,
         tool_type=payload.tool_type,
@@ -235,6 +312,12 @@ async def update_web_tool(
     tool = await db.get(WebToolConfig, tool_id)
     if tool is None:
         raise HTTPException(404, "Web tool non trovato")
+    # Core tools (Wikipedia, Web Agent) cannot change type.
+    if payload.tool_type and payload.tool_type in ("wikipedia", "web_agent", "arxiv"):
+        raise HTTPException(
+            400,
+            "Wikipedia, Web Agent and Arxiv — their type cannot be changed.",
+        )
     data = payload.model_dump(exclude_unset=True)
     if "api_key" in data:
         key = data.pop("api_key")
@@ -251,6 +334,11 @@ async def delete_web_tool(tool_id: int, db: AsyncSession = Depends(get_db)):
     tool = await db.get(WebToolConfig, tool_id)
     if tool is None:
         raise HTTPException(404, "Web tool non trovato")
+    if tool.tool_type in ("wikipedia", "web_agent", "arxiv"):
+        raise HTTPException(
+            400,
+            "Wikipedia, Web Agent and Arxiv cannot be deleted.",
+        )
     await db.delete(tool)
     await db.commit()
     return {"ok": True}
@@ -281,6 +369,9 @@ async def create_project(
     research_mode: bool = Form(False),
     web_tool_ids: str = Form(""),
     research_max_queries: int = Form(0),
+    web_agent_max_iterations: int = Form(3),
+    web_agent_provider_id: int = Form(0),
+    web_agent_model: str = Form(""),
     urls: str = Form(""),
     files: list[UploadFile] = File(...),
     db: AsyncSession = Depends(get_db),
@@ -332,6 +423,11 @@ async def create_project(
         research_mode=bool(research_mode),
         web_tool_ids=_parsed_tool_ids if _parsed_tool_ids else None,
         research_max_queries=research_max_queries if research_max_queries > 0 else None,
+        web_agent_max_iterations=web_agent_max_iterations,
+        web_agent_provider_id=web_agent_provider_id
+        if web_agent_provider_id > 0
+        else None,
+        web_agent_model=web_agent_model or None,
         status=ProjectStatus.uploaded,
         total_sources=total_source_count,
     )
@@ -375,19 +471,17 @@ async def create_project(
         )
         src_idx += 1
 
-    # Add URLs as source entries — use a short, readable filename derived from
-    # the domain + path stem so the planner LLM reliably copies it into
-    # source_filenames (a full https://... URL would often be mangled).
+    # Validate and normalize URLs before creating source entries.
     url_infos: list[dict] = []
     for url in url_list:
         try:
-            parsed = urlparse(url)
-            if not parsed.netloc:
-                url_slug = f"web_{hashlib.md5(url.encode()).hexdigest()[:8]}"
-            else:
-                domain = parsed.netloc.replace(".", "_")
-                path_stem = parsed.path.rstrip("/").split("/")[-1] or "page"
-                url_slug = f"{domain}_{path_stem}"[:64]
+            safe_url = _validate_url(url)
+            parsed = urlparse(safe_url)
+            domain = parsed.netloc.replace(".", "_")
+            path_stem = parsed.path.rstrip("/").split("/")[-1] or "page"
+            url_slug = f"{domain}_{path_stem}"[:64]
+        except HTTPException:
+            raise
         except Exception:
             url_slug = f"web_{hashlib.md5(url.encode()).hexdigest()[:8]}"
         url_infos.append(
@@ -539,12 +633,15 @@ async def get_figure(
     project_key: str, filename: str, db: AsyncSession = Depends(get_db)
 ):
     """Serve a figure image (extracted or user-uploaded) by filename."""
+    import mimetypes
+
     project = await _project_by_key(db, project_key)
     safe = Path(filename).name
     path = settings.uploads_dir / f"project_{project.id}" / "figures" / safe
     if not path.exists():
         raise HTTPException(404, "Figura non trovata")
-    return FileResponse(path, media_type="image/png")
+    mime, _ = mimetypes.guess_type(str(path))
+    return FileResponse(path, media_type=mime or "application/octet-stream")
 
 
 @router.post("/projects/{project_key}/figures/upload")

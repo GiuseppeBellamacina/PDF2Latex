@@ -23,6 +23,22 @@ from app.core.logging import get_logger
 
 logger = get_logger("figure_scorer")
 
+# Lazy-init semaphore keyed by running event loop + concurrency value
+# (avoids the pytest-asyncio "bound to different event loop" RuntimeError
+# and correctly responds to per-call concurrency overrides).
+_SEMAPHORE_STATE: dict[str, Any] = {"loop": None, "sem": None, "concurrency": None}
+
+
+def _get_semaphore(concurrency: int | None = None) -> asyncio.Semaphore:
+    limit = concurrency or settings.llm_max_concurrency
+    loop = asyncio.get_running_loop()
+    if _SEMAPHORE_STATE["loop"] is not loop or _SEMAPHORE_STATE["concurrency"] != limit:
+        _SEMAPHORE_STATE["loop"] = loop
+        _SEMAPHORE_STATE["concurrency"] = limit
+        _SEMAPHORE_STATE["sem"] = asyncio.Semaphore(limit)
+    return _SEMAPHORE_STATE["sem"]
+
+
 _SCORE_FIGURE_SYSTEM = """Sei un revisore accademico che valuta se un'immagine estratta da un PDF
 merita di essere inclusa in un documento LaTeX riassuntivo.
 
@@ -107,7 +123,7 @@ async def score_figures_with_llm(
 
     Returns the updated list (mutated in place, but also returned for clarity).
     """
-    sem = asyncio.Semaphore(concurrency or settings.llm_max_concurrency)
+    sem = _get_semaphore(concurrency)
 
     async def _score_one(fig: dict[str, Any]) -> None:
         async with sem:

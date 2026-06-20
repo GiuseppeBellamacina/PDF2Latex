@@ -2,6 +2,14 @@ export function cn(...classes: (string | false | null | undefined)[]): string {
   return classes.filter(Boolean).join(" ");
 }
 
+/** Web tool types that require an API key to function. */
+const WEB_TOOLS_REQUIRING_KEY = new Set(["tavily", "perplexity"]);
+
+/** True when a web tool type needs an API key (Tavily, Perplexity). */
+export function webToolRequiresKey(toolType: string): boolean {
+  return WEB_TOOLS_REQUIRING_KEY.has(toolType);
+}
+
 export function formatDate(iso: string): string {
   try {
     return new Date(iso).toLocaleString("en-US", {

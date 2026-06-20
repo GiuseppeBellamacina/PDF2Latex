@@ -9,10 +9,11 @@ Run from the *backend* directory (one level above this file):
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 # Suppress transitive-dependency nags that fire at import time.
-# Albumentations 1.x → 2.x upgrade nag: we pin <2.0 because nougat-ocr still
-# passes the deprecated `alpha_affine` kwarg (removed in 2.x).
+# Albumentations 1.x → 2.x upgrade nag: pix2tex still uses deprecated
+# parameter names removed in 2.x (e.g. `alpha_affine` in ElasticTransform).
 os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
 
 from contextlib import asynccontextmanager
@@ -63,9 +64,40 @@ def main() -> None:
         host=settings.host,
         port=settings.port,
         reload=settings.debug,
-        # Only watch our source; otherwise the reloader scans .venv and
-        # restarts the server mid-request when packages touch files.
-        reload_dirs=["app"] if settings.debug else None,
+        # Only watch app/ source code.
+        reload_dirs=[str(Path(__file__).resolve().parent)] if settings.debug else None,
+        # Exclude patterns for uvicorn's FileFilter.
+        # Mechanism A — directory names: checked via `exclude_dir in path.parents`.
+        #   FileFilter calls `Path(e).is_dir()` on each entry; if True it goes to
+        #   exclude_dirs and any changed .py file *inside* that tree is ignored.
+        # Mechanism B — file patterns: checked via `path.match(pattern)`.
+        #   FileFilter uses fnmatch‑style patterns matched from the right.
+        #   Simple patterns like *.pyc work; globs like **/storage/** do NOT.
+        #
+        # NOTE: watchfiles.main logs *all* raw OS filesystem events (before
+        # FileFilter runs), so you may still see "N changes detected" messages
+        # from the `watchfiles.main` logger.  Those do NOT mean a reload is
+        # happening — uvicorn only restarts when a .py file in a non-excluded
+        # directory actually changed.
+        reload_excludes=(
+            [
+                # --- directories -------------------------------------------------
+                "storage",  # SQLite DB + logs + cache + output + uploads
+                "storage-test",  # test database
+                ".venv",  # virtual environment (10 000+ files)
+                ".pytest_cache",  # pytest cache
+                ".ruff_cache",  # ruff cache
+                # --- file patterns (matched by fnmatch) --------------------------
+                "*.pyc",  # compiled bytecode
+                "*.db",  # SQLite databases
+                "*.db-journal",  # SQLite rollback journal
+                "*.db-wal",  # SQLite write-ahead log
+                "*.db-shm",  # SQLite shared-memory index
+                "*.log",  # log files
+            ]
+            if settings.debug
+            else None
+        ),
     )
 
 

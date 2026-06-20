@@ -238,8 +238,7 @@ export default function FiguresPanel({
         </div>
 
         <p className="text-xs text-ink-500">
-          Upload your own images and specify where they should appear. Each
-          image is always included in the document.
+          Add your own images to the document. They are always included.
         </p>
 
         {deleteError && (

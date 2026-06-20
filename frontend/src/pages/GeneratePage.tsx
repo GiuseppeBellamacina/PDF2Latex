@@ -4,11 +4,14 @@ import {
   ExternalLink,
   Gavel,
   GitGraph,
+  Globe,
   Hammer,
   List,
   Loader2,
   Play,
+  Search,
   Settings2,
+  Sparkles,
   Square,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -26,7 +29,35 @@ import ProgressTimeline from "../components/ProgressTimeline";
 import ProviderSelect from "../components/ProviderSelect";
 import { useGenerateWs } from "../hooks/useGenerateWs";
 import { api, type Project } from "../lib/api";
+import { cn } from "../lib/utils";
 import { useAppStore } from "../stores/appStore";
+
+const RESEARCH_SOURCE_ICONS: Record<string, React.ReactNode> = {
+  arxiv: <span className="font-bold text-[9px]">A</span>,
+  wikipedia: <Globe size={11} />,
+  tavily: <Search size={11} />,
+  perplexity: <Sparkles size={11} />,
+};
+const RESEARCH_SOURCE_COLORS: Record<string, string> = {
+  arxiv: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+  wikipedia: "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
+  tavily: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
+  perplexity: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+};
+
+function getResearchSourceIcon(source: string): React.ReactNode {
+  const key = Object.keys(RESEARCH_SOURCE_ICONS).find((k) =>
+    source.toLowerCase().includes(k),
+  );
+  return RESEARCH_SOURCE_ICONS[key ?? ""] ?? <Globe size={11} />;
+}
+
+function getResearchSourceColor(source: string): string {
+  const key = Object.keys(RESEARCH_SOURCE_COLORS).find((k) =>
+    source.toLowerCase().includes(k),
+  );
+  return RESEARCH_SOURCE_COLORS[key ?? ""] ?? "bg-ink-100 text-ink-500 dark:bg-ink-800 dark:text-ink-400";
+}
 
 export default function GeneratePage() {
   const { projectId } = useParams();
@@ -242,6 +273,54 @@ export default function GeneratePage() {
               .catch(() => {})
           }
         />
+      )}
+
+      {latest?.research_results && latest.research_results.length > 0 && (
+        <div className="card space-y-3">
+          <div className="flex items-center gap-2">
+            <Search size={16} className="text-violet-500" />
+            <h2 className="text-sm font-semibold">
+              Web sources found ({latest.research_results.length})
+            </h2>
+          </div>
+          <ul className="space-y-1.5 max-h-64 overflow-auto">
+            {latest.research_results.map((r, i) => {
+              const sourceIcon = getResearchSourceIcon(r.source);
+              const sourceColor = getResearchSourceColor(r.source);
+              return (
+                <li key={i} className="flex items-start gap-2 rounded-lg px-3 py-2 text-sm transition-colors hover:bg-ink-50 dark:hover:bg-ink-900/50">
+                  <span
+                    className={cn(
+                      "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-[10px]",
+                      sourceColor,
+                    )}
+                  >
+                    {sourceIcon}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium text-ink-700 dark:text-ink-200">
+                      {r.title}
+                    </p>
+                    <div className="flex items-center gap-2 text-xs text-ink-400">
+                      <span className="truncate">{r.source}</span>
+                      {r.url && (
+                        <a
+                          href={r.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="shrink-0 text-violet-500 hover:text-violet-700 dark:text-violet-400 dark:hover:text-violet-300"
+                          title={r.url}
+                        >
+                          <ExternalLink size={11} />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
       )}
 
       {latest?.plan && latest.plan.length > 0 && (

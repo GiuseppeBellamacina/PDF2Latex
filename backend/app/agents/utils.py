@@ -37,7 +37,22 @@ T = TypeVar("T", bound=BaseModel)
 
 # Global gate so the total number of concurrent LLM calls stays bounded even
 # across multiple fan-out stages.
-_SEMAPHORE = asyncio.Semaphore(max(1, settings.llm_max_concurrency))
+# Lazily initialised per running event loop so that pytest-asyncio (which
+# creates a fresh event loop per test) doesn't trip over a bound-in-wrong-loop
+# RuntimeError.  In production the loop never changes, so the semaphore is
+# created exactly once.
+_SEMAPHORE_STATE: dict[str, Any] = {"loop": None, "sem": None}
+
+
+def _get_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    if _SEMAPHORE_STATE["loop"] is not loop:
+        _SEMAPHORE_STATE["loop"] = loop
+        _SEMAPHORE_STATE["sem"] = asyncio.Semaphore(
+            max(1, settings.llm_max_concurrency)
+        )
+    return _SEMAPHORE_STATE["sem"]
+
 
 # Cache of instantiated chat models, keyed by a hashable view of the config.
 _MODEL_CACHE: dict[tuple, Any] = {}
@@ -141,7 +156,7 @@ async def _ainvoke_with_retry(model: Any, messages: list, label: str) -> Any:
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            async with _SEMAPHORE:
+            async with _get_semaphore():
                 if timeout is None:
                     return await model.ainvoke(messages)
                 return await asyncio.wait_for(model.ainvoke(messages), timeout=timeout)

@@ -38,9 +38,6 @@ export default function StructurePanel({
           placeholder="List chapters in order, e.g.\n1. Introduction\n2. Foundations\n3. Architectures\n4. Conclusions"
           spellCheck={false}
         />
-        <p className="mt-1 text-xs text-ink-500">
-          Leave empty to let the AI plan the structure automatically.
-        </p>
       </div>
 
       <div>
@@ -62,8 +59,7 @@ export default function StructurePanel({
           <span className="text-xs text-ink-400">— optional</span>
         </div>
         <p className="mb-2 text-xs text-ink-500">
-          References the system should cite. One per line: <code className="rounded bg-ink-200 px-1 dark:bg-ink-700">Author | Title | Year | Venue</code>.
-          Lines starting with <code className="rounded bg-ink-200 px-1 dark:bg-ink-700">#</code> are ignored.
+          One per line: <code className="rounded bg-ink-200 px-1 dark:bg-ink-700">Author | Title | Year | Venue</code>.
         </p>
         <textarea
           className="input min-h-24 resize-y font-mono text-xs"

@@ -26,6 +26,8 @@ export interface ProgressEvent {
   chapter?: string;
   chapter_done?: number;
   chapter_total?: number;
+  /** Web research results — sources found during research phase */
+  research_results?: { title: string; url: string; source: string }[];
 }
 
 export function useGenerateWs(projectId: string) {

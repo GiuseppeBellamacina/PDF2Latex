@@ -64,6 +64,28 @@ async def plan_document(
             )
         )
 
-    sections.sort(key=lambda s: s["order_index"])
+    # ── Deterministic source-order sort ────────────────────────────────
+    # When the user hasn't provided an explicit structure hint, sections
+    # are sorted by the earliest source document they reference, so the
+    # chapter order mirrors the extraction order the user chose.
+    # Within the same source, the LLM's order_index is used as a tiebreak.
+    source_order: dict[str, int] = {
+        a.get("filename", ""): i for i, a in enumerate(analyses)
+    }
+
+    def _source_priority(s: PlannedSection) -> float:
+        indices = [source_order[f] for f in s["source_filenames"] if f in source_order]
+        return float(min(indices)) if indices else float("inf")
+
+    if not structure_hint:
+        sections.sort(key=lambda s: (_source_priority(s), s["order_index"]))
+    else:
+        sections.sort(key=lambda s: s["order_index"])
+
+    # Rewrite order_index so the deterministic order is locked in for
+    # downstream nodes (write_node, assembly).
+    for i, s in enumerate(sections):
+        s["order_index"] = i
+
     logger.info("Piano: '%s' con %d sezioni", title, len(sections))
     return title, sections

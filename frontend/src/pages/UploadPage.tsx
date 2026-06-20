@@ -1,9 +1,9 @@
-import { ArrowRight, Bot, Globe, Link, Plus, Search, Sparkles, X } from "lucide-react";
+import { ArrowRight, BookOpen, Globe, Key, Link as LinkIcon, Plus, Search, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import Checkbox from "../components/Checkbox";
 import Dropzone from "../components/Dropzone";
-import { cn } from "../lib/utils";
+import { cn, webToolRequiresKey } from "../lib/utils";
 import { api } from "../lib/api";
 import { LANGUAGE_SUGGESTIONS } from "../lib/languages";
 import { useAppStore } from "../stores/appStore";
@@ -12,13 +12,15 @@ const WEB_TOOL_ICON: Record<string, React.ReactNode> = {
   tavily: <Search size={16} />,
   perplexity: <Sparkles size={16} />,
   wikipedia: <Globe size={16} />,
-  web_agent: <Bot size={16} />,
+  web_agent: <Globe size={16} />,
+  arxiv: <BookOpen size={16} />,
 };
 const WEB_TOOL_COLOR: Record<string, string> = {
   tavily: "bg-violet-100 text-violet-600 dark:bg-violet-900/40 dark:text-violet-300",
   perplexity: "bg-amber-100 text-amber-600 dark:bg-amber-900/40 dark:text-amber-300",
   wikipedia: "bg-sky-100 text-sky-600 dark:bg-sky-900/40 dark:text-sky-300",
   web_agent: "bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-300",
+  arxiv: "bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-300",
 };
 
 function getWebToolIcon(type: string): React.ReactNode {
@@ -42,6 +44,28 @@ export default function UploadPage() {
   const [researchMode, setResearchMode] = useState(false);
   const [webToolIds, setWebToolIds] = useState<Set<number>>(new Set());
   const [maxQueries, setMaxQueries] = useState<number>(0);
+  const [quickAdding, setQuickAdding] = useState<string | null>(null);
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [apiKeyTarget, setApiKeyTarget] = useState<string | null>(null);
+
+  async function submitApiKeyTool() {
+    const target = apiKeyTarget;
+    if (!target || !apiKeyInput.trim()) return;
+    const key = apiKeyInput.trim();
+    setQuickAdding(target);
+    setApiKeyTarget(null);
+    setApiKeyInput("");
+    try {
+      await api.createWebTool({
+        name: target === "tavily" ? "Tavily" : "Perplexity",
+        tool_type: target,
+        api_key: key,
+        is_active: true,
+      });
+      await loadWebTools();
+    } catch { /* ignore duplicate */ }
+    setQuickAdding(null);
+  }
 
   // Random placeholder picked once on mount.
   const titlePlaceholder = useMemo(() => {
@@ -60,24 +84,6 @@ export default function UploadPage() {
   useEffect(() => {
     loadWebTools();
   }, [loadWebTools]);
-
-  // Auto-select built-in (no-API-key) tools when research mode is enabled.
-  useEffect(() => {
-    if (!researchMode) return;
-    const builtinIds = activeWebTools
-      .filter((t) => !t.has_api_key)
-      .map((t) => t.id);
-    if (builtinIds.length === 0) return;
-    setWebToolIds((prev) => {
-      const next = new Set(prev);
-      let changed = false;
-      for (const id of builtinIds) {
-        if (!next.has(id)) { next.add(id); changed = true; }
-      }
-      return changed ? next : prev;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [researchMode]);
 
   const totalSources = files.length + urlList.length;
   const activeWebTools = webTools.filter((t) => t.is_active);
@@ -181,7 +187,7 @@ export default function UploadPage() {
                       )}
                     </span>
                   }
-                  hint="No PDFs required. The system will search the web for information on your topic and build the document from online sources."
+                  hint="Generate a document purely from web research — no files needed."
                 />
               </span>
             </div>
@@ -202,17 +208,21 @@ export default function UploadPage() {
                   <>
                     <label className="mb-2 flex items-center gap-1.5 text-xs font-medium">
                       <Search size={12} className="text-emerald-500" />
-                      Web search tools
+                      Search tools
                     </label>
                     <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                       {activeWebTools.map((t) => {
                         const selected = webToolIds.has(t.id);
                         const toolIcon = getWebToolIcon(t.tool_type);
                         const toolColor = getWebToolColor(t.tool_type);
+                        const missingRequiredKey =
+                          webToolRequiresKey(t.tool_type) && !t.has_api_key;
                         return (
                           <button
                             key={t.id}
                             type="button"
+                            disabled={missingRequiredKey}
+                            title={missingRequiredKey ? "API key required — configure in Settings" : undefined}
                             onClick={(e) => {
                               e.stopPropagation();
                               const next = new Set(webToolIds);
@@ -257,18 +267,17 @@ export default function UploadPage() {
                                 )}
                               </div>
                               <p className="mt-0.5 text-[11px] text-ink-400">
-                                {t.has_api_key ? "API key configured" : "No API key needed"}
-                                {t.tool_type === "web_agent" && " · Agentic search"}
+                                {t.has_api_key
+                                  ? "API key configured"
+                                  : webToolRequiresKey(t.tool_type)
+                                    ? "API key required"
+                                    : "No API key needed"}
                               </p>
                             </div>
                           </button>
                         );
                       })}
                     </div>
-                    <p className="mt-2 text-[10px] text-ink-400">
-                      Choose one or more search engines. Results are merged
-                      for broader coverage.
-                    </p>
                         {/* Query limit */}
                         <div className="mt-3">
                           <label className="mb-1 flex items-center gap-1.5 text-xs font-medium">
@@ -284,19 +293,97 @@ export default function UploadPage() {
                             onChange={(e) => setMaxQueries(Math.max(0, Number(e.target.value)))}
                             placeholder="0 = unlimited"
                           />
-                          <p className="mt-1 text-[10px] text-ink-400">
-                            Set a limit to control API costs with paid search providers.
-                          </p>
                         </div>
                   </>
+                ) : apiKeyTarget ? (
+                  <div className="space-y-2.5">
+                    <p className="text-xs font-medium text-ink-500">
+                      API key for {apiKeyTarget === "tavily" ? "Tavily" : "Perplexity"}
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        autoFocus
+                        type="password"
+                        className="input flex-1 text-sm"
+                        value={apiKeyInput}
+                        onChange={(e) => setApiKeyInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && apiKeyInput.trim()) {
+                            e.preventDefault();
+                            submitApiKeyTool();
+                          }
+                        }}
+                        placeholder={`Paste your ${apiKeyTarget === "tavily" ? "Tavily" : "Perplexity"} API key…`}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                      <button
+                        type="button"
+                        disabled={!apiKeyInput.trim() || quickAdding !== null}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          submitApiKeyTool();
+                        }}
+                        className="btn-primary px-3 py-2 text-xs"
+                      >
+                        {quickAdding ? "Adding…" : "Add"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setApiKeyTarget(null);
+                          setApiKeyInput("");
+                        }}
+                        className="rounded-lg border border-ink-200 px-2 py-2 text-ink-400 hover:text-ink-600 dark:border-ink-700 dark:hover:text-ink-300"
+                        aria-label="Cancel"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  </div>
                 ) : (
-                  <p className="text-xs text-amber-700 dark:text-amber-300">
-                    <span className="font-bold">!</span> No web tools configured.{" "}
-                    <span className="font-medium">
-                      Add one in Settings below
-                    </span>{" "}
-                    (Wikipedia is free, no API key needed).
-                  </p>
+                  <div className="space-y-2.5">
+                    <p className="text-xs font-medium text-ink-500">Quick add</p>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setApiKeyTarget("tavily");
+                          setApiKeyInput("");
+                        }}
+                        className="flex items-center gap-2 rounded-lg border border-violet-300 px-3 py-2 text-xs font-medium text-violet-700 hover:bg-violet-50 transition-colors dark:border-violet-700 dark:text-violet-300 dark:hover:bg-violet-950/30"
+                      >
+                        <Search size={14} />
+                        Tavily
+                        <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" title="API key required — configure in Settings">
+                          <Key size={8} />
+                          KEY
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setApiKeyTarget("perplexity");
+                          setApiKeyInput("");
+                        }}
+                        className="flex items-center gap-2 rounded-lg border border-amber-300 px-3 py-2 text-xs font-medium text-amber-700 hover:bg-amber-50 transition-colors dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-950/30"
+                      >
+                        <Sparkles size={14} />
+                        Perplexity
+                        <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold text-amber-700 dark:bg-amber-900/40 dark:text-amber-300" title="API key required — configure in Settings">
+                          <Key size={8} />
+                          KEY
+                        </span>
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-ink-400">
+                      <Link to="/settings" className="underline decoration-dotted hover:text-ink-600">
+                        Or add API keys in Settings
+                      </Link>
+                    </p>
+                  </div>
                 )}
               </div>
             </div>
@@ -306,7 +393,7 @@ export default function UploadPage() {
         {/* ── URL input ──────────────────────────────────────────────── */}
         <div className="space-y-2">
           <label className="block text-sm font-medium">
-            <Link size={14} className="mr-1.5 inline text-ink-400" />
+            <LinkIcon size={14} className="mr-1.5 inline text-ink-400" />
             Web URLs
           </label>
           <div className="flex gap-2">

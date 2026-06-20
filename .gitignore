@@ -8,8 +8,10 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .env
-backend/storage/
+.env.test
+backend/storage*/
 backend/.venv/
+backend/tests/assets/
 
 # --- Node / frontend ---
 node_modules/
