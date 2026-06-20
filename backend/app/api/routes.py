@@ -227,6 +227,22 @@ async def delete_provider(provider_id: int, db: AsyncSession = Depends(get_db)):
     return {"ok": True}
 
 
+@router.get("/providers/ollama/models")
+async def list_ollama_models(base_url: str = "http://localhost:11434"):
+    """Fetch available models from a running Ollama instance (``/api/tags``)."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{base_url.rstrip('/')}/api/tags")
+            resp.raise_for_status()
+            data = resp.json()
+            models = sorted({m["name"] for m in data.get("models", [])})
+            return {"models": models, "error": None}
+    except Exception as exc:
+        return {"models": [], "error": str(exc)}
+
+
 @router.post("/providers/test")
 async def test_provider(payload: ProviderTestRequest):
     config = LLMConfig(

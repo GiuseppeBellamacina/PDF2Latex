@@ -5,8 +5,10 @@ import {
   Clock,
   Cpu,
   Globe,
+  Loader,
   Pencil,
   Plus,
+  RefreshCw,
   Search,
   Trash2,
   X,
@@ -139,6 +141,9 @@ export default function SettingsPage() {
   const [editForm, setEditForm] = useState<ProviderInput>(EMPTY);
   const [modelOpen, setModelOpen] = useState(false);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
+  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
+  const [ollamaLoading, setOllamaLoading] = useState(false);
+  const [ollamaError, setOllamaError] = useState<string | null>(null);
 
   useEffect(() => {
     loadProviders();
@@ -168,8 +173,12 @@ export default function SettingsPage() {
     form.provider_type !== "openai" &&
     form.provider_type !== "anthropic" &&
     form.provider_type !== "fake";
-  const typeModels = KNOWN_MODELS[form.provider_type] ?? [];
-  const hasKnownModels = typeModels.length > 0;
+  const isOllama = form.provider_type === "ollama";
+  const hasFetchedOllama = isOllama && ollamaModels.length > 0;
+  const typeModels = hasFetchedOllama
+    ? ollamaModels
+    : KNOWN_MODELS[form.provider_type] ?? [];
+  const hasKnownModels = typeModels.length > 0 || isOllama;
 
   async function create() {
     setBusy(true);
@@ -237,6 +246,40 @@ export default function SettingsPage() {
     await api.updateProvider(p.id, { is_active: !p.is_active });
     loadProviders();
   }
+
+  // ── Ollama model discovery ────────────────────────────────────────────
+  async function fetchOllama() {
+    if (!form.base_url) return;
+    setOllamaLoading(true);
+    setOllamaError(null);
+    try {
+      const result = await api.fetchOllamaModels(form.base_url);
+      if (result.error) {
+        setOllamaError(result.error);
+        setOllamaModels([]);
+      } else {
+        setOllamaModels(result.models);
+      }
+    } catch (e) {
+      setOllamaError(String(e));
+      setOllamaModels([]);
+    } finally {
+      setOllamaLoading(false);
+    }
+  }
+
+  // Auto-fetch Ollama models when base_url changes (debounced 500 ms)
+  useEffect(() => {
+    if (form.provider_type !== "ollama") {
+      setOllamaModels([]);
+      setOllamaError(null);
+      return;
+    }
+    if (!form.base_url) return;
+    const timer = setTimeout(() => fetchOllama(), 500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.provider_type, form.base_url]);
 
   // ── Web tool CRUD ─────────────────────────────────────────────────────
   async function createWeb() {
@@ -310,7 +353,9 @@ export default function SettingsPage() {
               Default model
               {hasKnownModels && (
                 <span className="ml-1 text-ink-400">
-                  — click for suggestions
+                  {isOllama && form.base_url
+                    ? "— auto-discovered"
+                    : "— click for suggestions"}
                 </span>
               )}
             </label>
@@ -331,26 +376,81 @@ export default function SettingsPage() {
                 }
               />
               {hasKnownModels && (
-                <button
-                  type="button"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-ink-400 hover:text-ink-600"
-                  onClick={() => setModelOpen((o) => !o)}
-                  tabIndex={-1}
-                >
-                  <ChevronDown
-                    size={16}
-                    className={cn(
-                      "transition-transform",
-                      modelOpen && "rotate-180",
-                    )}
-                  />
-                </button>
+                <>
+                  {isOllama && form.base_url && (
+                    <button
+                      type="button"
+                      className="absolute right-8 top-1/2 -translate-y-1/2 p-0.5 text-ink-400 hover:text-ink-600 disabled:opacity-40"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        fetchOllama();
+                      }}
+                      disabled={ollamaLoading}
+                      tabIndex={-1}
+                      title={
+                        ollamaLoading
+                          ? "Fetching…"
+                          : "Fetch models from Ollama"
+                      }
+                    >
+                      <RefreshCw
+                        size={14}
+                        className={ollamaLoading ? "animate-spin" : ""}
+                      />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-ink-400 hover:text-ink-600"
+                    onClick={() => setModelOpen((o) => !o)}
+                    tabIndex={-1}
+                  >
+                    <ChevronDown
+                      size={16}
+                      className={cn(
+                        "transition-transform",
+                        modelOpen && "rotate-180",
+                      )}
+                    />
+                  </button>
+                </>
               )}
             </div>
             {modelOpen && hasKnownModels && (
               <div className="absolute z-20 mt-1 w-full rounded-xl border border-ink-200 bg-white py-1 shadow-lg dark:border-ink-700 dark:bg-ink-900">
+                {isOllama && ollamaLoading && (
+                  <div className="flex items-center gap-2 px-3 py-2 text-sm text-ink-400">
+                    <Loader size={14} className="animate-spin" />
+                    Fetching models…
+                  </div>
+                )}
+                {isOllama && ollamaError && ollamaModels.length === 0 && (
+                  <div className="px-3 py-2 text-xs text-red-500">
+                    {ollamaError}
+                  </div>
+                )}
+                {typeModels.length === 0 && !ollamaLoading && (
+                  <div className="px-3 py-2 text-xs text-ink-400">
+                    {isOllama && ollamaError
+                      ? "Could not reach Ollama."
+                      : "No models found."}
+                    {isOllama && form.base_url && (
+                      <button
+                        type="button"
+                        className="ml-1 text-blue-500 underline hover:text-blue-700"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          fetchOllama();
+                        }}
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                )}
                 {typeModels.map((m) => {
-                  const isRecommended = m === typeModels[0];
+                  const isRecommended = m === typeModels[0] && !isOllama;
+                  const isNew = isOllama && ollamaModels.includes(m);
                   return (
                     <button
                       key={m}
@@ -365,6 +465,11 @@ export default function SettingsPage() {
                       {isRecommended && (
                         <span className="shrink-0 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
                           recommended
+                        </span>
+                      )}
+                      {isNew && (
+                        <span className="shrink-0 rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">
+                          discovered
                         </span>
                       )}
                     </button>

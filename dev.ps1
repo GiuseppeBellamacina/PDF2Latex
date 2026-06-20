@@ -42,29 +42,12 @@ foreach ($port in $ports) {
 }
 
 # ── Open Backend terminal ──────────────────────────────────────────────
-$backendCmd = @"
-Write-Host "===  Backend (FastAPI)  ===" -ForegroundColor Blue
-Write-Host "     http://localhost:8000" -ForegroundColor White
-Write-Host "     http://localhost:8000/docs" -ForegroundColor DarkGray
-Write-Host "Ctrl+C to stop" -ForegroundColor DarkGray
-Write-Host ""
-
-cd "$ScriptDir\backend"
-
-# Activate virtual environment
-if (Test-Path ".venv\Scripts\Activate.ps1") {
-    . .venv\Scripts\Activate.ps1
-    Write-Host "venv activated" -ForegroundColor DarkGray
-}
-
-uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-"@
-
+$backendCmd = "cd '$ScriptDir\backend'; Write-Host '===  Backend  ===' -ForegroundColor Blue; Write-Host '     http://localhost:8000' -ForegroundColor White; Write-Host '     http://localhost:8000/docs' -ForegroundColor DarkGray; if (Test-Path '.venv\Scripts\Activate.ps1') { . '.venv\Scripts\Activate.ps1'; Write-Host 'venv activated' -ForegroundColor DarkGray }; uv run python -m uvicorn app.main:app --reload --reload-dir app --host 0.0.0.0 --port 8000"
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendCmd
 
 # ── Open Frontend terminal ─────────────────────────────────────────────
 $frontendCmd = @"
-Write-Host "===  Frontend (Vite)  ===" -ForegroundColor Green
+Write-Host "===  Frontend  ===" -ForegroundColor Green
 Write-Host "     http://localhost:5173" -ForegroundColor White
 Write-Host "Ctrl+C to stop" -ForegroundColor DarkGray
 Write-Host ""

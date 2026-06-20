@@ -38,10 +38,6 @@ class Settings(BaseSettings):
     latex_template: str = "default"  # default | paper | thesis-oneside | thesis-twoside
 
     # PDF extraction
-    # Deprecated: legacy fallback when no pipeline_config is set.
-    extractor_backend: str = "hybrid"  # hybrid | pymupdf | docling
-    # Deprecated: legacy fallback. OCR is now auto-enabled from pipeline_config.
-    enable_ocr: bool = False
     ocr_lang: str = "ita+eng"  # tesseract language(s); '+' to combine
     # Explicit path to the tesseract executable. Leave empty to auto-detect:
     # the app looks on PATH and in the standard Windows install locations

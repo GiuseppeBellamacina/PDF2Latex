@@ -357,6 +357,10 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     }),
+  fetchOllamaModels: (baseUrl: string) =>
+    req<{ models: string[]; error: string | null }>(
+      `/providers/ollama/models?base_url=${encodeURIComponent(baseUrl)}`,
+    ),
   backends: () => req<Backends>("/backends"),
   getPipeline: (projectKey?: string) =>
     req<PipelineDescription>(
