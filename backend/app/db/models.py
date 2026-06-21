@@ -88,15 +88,11 @@ class Project(Base):
     # regenerate, undo) clears it so reassembly takes over again.
     main_tex_override = Column(Text, nullable=True)
 
-    # Extraction configuration
-    extractor_backend = Column(String(50), nullable=True)  # pymupdf|docling
-    enable_ocr = Column(Boolean, default=False)
     # Per-project OCR language (e.g. "ita+eng", "eng", "fra"). When left empty,
     # the global ``settings.ocr_lang`` is used as fallback.
     ocr_lang = Column(String(50), nullable=True)
     # Composable extraction pipeline: a mapping {stage_id: tool_id} built in the
-    # dashboard. When set it supersedes ``extractor_backend`` (which is kept as a
-    # legacy fallback for older projects).
+    # dashboard.
     pipeline_config = Column(JSON, nullable=True)
     # LaTeX document template (default | paper | thesis-oneside | thesis-twoside).
     latex_template = Column(String(50), default="default")
@@ -116,9 +112,6 @@ class Project(Base):
     # using the web tools configured in ``web_tool_ids``. Works alongside
     # uploaded PDFs (research supplements the extracted content).
     research_mode = Column(Boolean, default=False)
-    # When True, ONLY use web research — skip PDF extraction entirely even
-    # if sources are present.  Implies ``research_mode=True``.
-    research_only = Column(Boolean, default=False)
     # List of WebToolConfig IDs to use for web research. Multiple tools
     # are searched in parallel and results are merged &amp; deduplicated.
     web_tool_ids = Column(JSON, nullable=True)

@@ -34,9 +34,10 @@ interface Props {
   events: ProgressEvent[];
   latest: ProgressEvent | null;
   onNodeClick?: (nodeId: string) => void;
+  selectedNode?: string | null;
 }
 
-export default function ProgressTimeline({ events, latest, onNodeClick }: Props) {
+export default function ProgressTimeline({ events, latest, onNodeClick, selectedNode }: Props) {
   const currentStage = latest?.stage ?? "";
   const currentIdx = STAGES.findIndex((s) => s.key === currentStage);
   const progress = latest?.progress ?? 0;
@@ -98,10 +99,14 @@ export default function ProgressTimeline({ events, latest, onNodeClick }: Props)
             const active = graphState.activeNodes.has(nid);
             const displayState = state === "pending" && active ? "active" : state;
             const clickable = displayState !== "pending" && onNodeClick;
+            const isSelected = selectedNode === nid;
             return (
               <div
                 key={nid}
-                className="h-1.5 flex-1 rounded-sm transition-all duration-500"
+                className={cn(
+                  "h-1.5 flex-1 rounded-sm transition-all duration-300",
+                  isSelected && "ring-2 ring-white dark:ring-ink-900 shadow-sm",
+                )}
                 style={{
                   backgroundColor: nodeColor(displayState),
                   cursor: clickable ? "pointer" : "default",

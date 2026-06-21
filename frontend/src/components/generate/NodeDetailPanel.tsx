@@ -1,4 +1,4 @@
-import { X } from "lucide-react";
+import { File, FileText, Globe, X } from "lucide-react";
 import type { ProgressEvent } from "../../hooks/useGenerateWs";
 import {
   COLORS,
@@ -7,6 +7,7 @@ import {
   type GraphState,
   type NodeDetail,
 } from "../PipelineGraph.utils";
+import { cn, getDocumentSourceColor, getResearchSourceStyle } from "../../lib/utils";
 
 interface Props {
   selectedNode: string;
@@ -103,8 +104,110 @@ export default function NodeDetailPanel({
         })}
       </div>
 
-      {/* Extra: Write node — chapter details */}
-      {selectedNode === "write" && graphState.chapters.length > 0 && (
+      {/* Rich: Research sources */}
+      {nodeDetail.researchSources && nodeDetail.researchSources.length > 0 && (
+        <div className="rounded-lg border border-ink-200/60 p-3 dark:border-ink-700/60">
+          <p className="mb-2 text-xs font-medium text-ink-400 uppercase">
+            Sources found ({nodeDetail.researchSources.length})
+          </p>
+          <div className="max-h-48 space-y-1.5 overflow-y-auto">
+            {nodeDetail.researchSources.map((src, i) => {
+              const sourceStyle = getResearchSourceStyle(src.source ?? "");
+              return (
+                <div
+                  key={i}
+                  className="flex items-start gap-2 rounded-md bg-ink-50/50 px-2.5 py-1.5 dark:bg-ink-800/50"
+                >
+                  <span className={cn("mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded", sourceStyle.color)}>
+                    {sourceStyle.icon}
+                  </span>
+                  <span className="text-sm leading-snug text-ink-700 dark:text-ink-300">
+                    {src.title.length > 80 ? src.title.slice(0, 79) + "…" : src.title}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Rich: Analyzed documents */}
+      {nodeDetail.analyzeDocuments && nodeDetail.analyzeDocuments.length > 0 && (
+        <div className="rounded-lg border border-ink-200/60 p-3 dark:border-ink-700/60">
+          <p className="mb-2 text-xs font-medium text-ink-400 uppercase">
+            Documents analyzed ({nodeDetail.analyzeDocuments.length})
+          </p>
+          <div className="space-y-1">
+            {nodeDetail.analyzeDocuments.map((doc, i) => {
+              const lower = doc.toLowerCase();
+              let DocIcon = File;
+              if (lower.endsWith(".pdf")) DocIcon = File;
+              else if (lower.endsWith(".md") || lower.endsWith(".txt")) DocIcon = FileText;
+              else if (lower.includes("://") || lower.startsWith("http")) DocIcon = Globe;
+              return (
+              <div key={i} className="flex items-center gap-2 px-2 py-1 text-sm text-ink-700 dark:text-ink-300">
+                <DocIcon size={12} className={`shrink-0 ${getDocumentSourceColor(doc)}`} />
+                <span>{doc.length > 60 ? doc.slice(0, 59) + "…" : doc}</span>
+              </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Rich: Chapter details (progress bars) */}
+      {nodeDetail.chapterDetails && nodeDetail.chapterDetails.length > 0 && (
+        <div className="rounded-lg border border-ink-200/60 p-3 dark:border-ink-700/60">
+          <p className="mb-2 text-xs font-medium text-ink-400 uppercase">
+            Chapters ({nodeDetail.chapterDetails.length})
+          </p>
+          <div className="space-y-2">
+            {nodeDetail.chapterDetails.map((ch, i) => {
+              const pct = ch.total > 0 ? Math.round((ch.done / ch.total) * 100) : 0;
+              return (
+                <div key={i}>
+                  <div className="mb-0.5 flex items-center justify-between text-xs">
+                    <span className="truncate font-medium text-ink-700 dark:text-ink-300">
+                      {ch.name.length > 28 ? ch.name.slice(0, 27) + "…" : ch.name}
+                    </span>
+                    <span className="ml-2 shrink-0 tabular-nums text-ink-400">
+                      {ch.done}/{ch.total}
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-ink-200 dark:bg-ink-700">
+                    <div
+                      className="h-full rounded-full bg-emerald-500 transition-all duration-700"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Rich: Error detail (LaTeX log) */}
+      {nodeDetail.errorDetail && (
+        <div className="rounded-lg border border-red-200/60 p-3 dark:border-red-900/60">
+          <p className="mb-2 text-xs font-medium text-red-500 dark:text-red-400 uppercase">
+            LaTeX Error
+          </p>
+          <div className="max-h-48 overflow-y-auto rounded-lg bg-red-50/80 p-2.5 font-mono text-[11px] leading-relaxed text-red-800 dark:bg-red-950/60 dark:text-red-200">
+            {nodeDetail.errorDetail.split("\n").slice(0, 6).map((line, i) => (
+              <div key={i}>{line || "\u00A0"}</div>
+            ))}
+            {nodeDetail.errorDetail.split("\n").length > 6 && (
+              <div className="mt-1 text-red-400 dark:text-red-500">
+                … +{nodeDetail.errorDetail.split("\n").length - 6} lines
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Extra: Write node — chapter details (fallback from graphState) */}
+      {selectedNode === "write" && graphState.chapters.length > 0 && !nodeDetail.chapterDetails && (
         <div className="rounded-lg border border-ink-200/60 p-3 dark:border-ink-700/60">
           <p className="mb-2 text-xs font-medium text-ink-400 uppercase">
             Chapter details

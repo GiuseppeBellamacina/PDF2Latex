@@ -49,13 +49,6 @@ class Settings(BaseSettings):
     latex_template: str = "default"  # default | paper | thesis-oneside | thesis-twoside
 
     # PDF extraction
-    extractor_backend: str = "hybrid"  # pymupdf | docling | hybrid (default)
-    enable_ocr: bool = True
-    ocr_lang: str = "ita+eng"  # tesseract language(s); '+' to combine
-    # Explicit path to the tesseract executable. Leave empty to auto-detect:
-    # the app looks on PATH and in the standard Windows install locations
-    # (e.g. C:\Program Files\Tesseract-OCR\tesseract.exe).
-    tesseract_cmd: str = ""
     render_dpi: int = 130
     # Docling renders every page through ML layout models; on large PDFs this
     # exhausts memory (std::bad_alloc). The hybrid backend therefore runs
@@ -74,6 +67,9 @@ class Settings(BaseSettings):
     llm_max_retries: int = 4  # retries on transient errors (429/5xx/timeouts)
     llm_retry_base_delay: float = 1.5  # seconds; exponential backoff base
     llm_request_timeout: int = 600  # seconds per LLM call
+    llm_max_tokens: int = (
+        8192  # global token budget per LLM call (prevents runaway loops)
+    )
     # RPM (requests per minute) gate: a single sliding-window scheduler that
     # pauses callers when the per-minute budget is exhausted. Disable with
     # ``llm_rpm_enabled=false``. Also settable per-LLM config (overrides this).

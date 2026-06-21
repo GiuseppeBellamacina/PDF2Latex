@@ -26,6 +26,7 @@ import {
   x0,
   y0,
 } from "./PipelineGraph.utils";
+import { cn, getDocumentSourceColor, getResearchSourceStyle } from "../lib/utils";
 
 /* ── Helpers ────────────────────────────────────────────────────────────── */
 
@@ -522,21 +523,14 @@ export default function PipelineGraph({ events, onNodeClick }: Props) {
                       </div>
                       <div className="max-h-[140px] space-y-1 overflow-y-auto">
                         {nodeDetail.researchSources.slice(0, 5).map((src, i) => {
-                          const sourceColor =
-                            src.source?.toLowerCase().includes("arxiv")
-                              ? "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300"
-                              : src.source?.toLowerCase().includes("wikipedia")
-                                ? "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
-                                : src.source?.toLowerCase().includes("tavily")
-                                  ? "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"
-                                  : "bg-ink-100 text-ink-600 dark:bg-ink-800 dark:text-ink-300";
+                          const sourceStyle = getResearchSourceStyle(src.source ?? "");
                           return (
                             <div
                               key={i}
                               className="flex items-start gap-1.5 rounded-md bg-ink-50/50 px-2 py-1.5 dark:bg-ink-800/50"
                             >
-                              <span className={`mt-0.5 shrink-0 rounded px-1 py-[1px] text-[9px] font-semibold uppercase ${sourceColor}`}>
-                                {src.source?.slice(0, 6) ?? "web"}
+                              <span className={cn("mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded", sourceStyle.color)}>
+                                {sourceStyle.icon}
                               </span>
                               <span className="leading-tight text-ink-700 dark:text-ink-300">
                                 {ellipsis(src.title, 60)}
@@ -562,7 +556,7 @@ export default function PipelineGraph({ events, onNodeClick }: Props) {
                       <div className="max-h-[100px] space-y-0.5 overflow-y-auto">
                         {nodeDetail.analyzeDocuments.slice(0, 4).map((doc, i) => (
                           <div key={i} className="flex items-center gap-1.5 px-2 py-1 text-ink-700 dark:text-ink-300">
-                            <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="shrink-0 text-ink-400">
+                            <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={`shrink-0 ${getDocumentSourceColor(doc)}`}>
                               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                               <polyline points="14 2 14 8 20 8" />
                             </svg>

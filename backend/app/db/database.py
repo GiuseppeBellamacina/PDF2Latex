@@ -31,8 +31,6 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "abstract": "TEXT",
         "cover_date": "VARCHAR(100)",
         "structure_hint": "TEXT",
-        "extractor_backend": "VARCHAR(50)",
-        "enable_ocr": "BOOLEAN DEFAULT 0",
         "ocr_lang": "VARCHAR(50)",
         "judge_vision": "BOOLEAN DEFAULT 0",
         "writer_use_knowledge": "BOOLEAN DEFAULT 0",
@@ -50,7 +48,6 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "web_agent_max_iterations": "INTEGER DEFAULT 3",
         "web_agent_provider_id": "INTEGER REFERENCES provider_configs(id)",
         "web_agent_model": "VARCHAR(100)",
-        "research_only": "BOOLEAN DEFAULT 0",
     },
     "figures": {
         "caption": "TEXT",

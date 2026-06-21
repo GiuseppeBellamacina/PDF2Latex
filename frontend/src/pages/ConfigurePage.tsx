@@ -65,7 +65,6 @@ export default function ConfigurePage() {
   const [showSummary, setShowSummary] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [researchMode, setResearchMode] = useState(false);
-  const [researchOnly, setResearchOnly] = useState(false);
   const [webToolIds, setWebToolIds] = useState<number[]>([]);
   const [researchMaxQueriesStr, setResearchMaxQueriesStr] = useState("");
   const [webAgentMaxIterations, setWebAgentMaxIterations] = useState(3);
@@ -94,7 +93,6 @@ export default function ConfigurePage() {
       setLatexTemplate(p.latex_template ?? "default");
       setWriterUseKnowledge(p.writer_use_knowledge ?? false);
       setResearchMode(p.research_mode ?? false);
-      setResearchOnly(p.research_only ?? false);
       setWebToolIds(p.web_tool_ids ?? []);
       setResearchMaxQueriesStr(p.research_max_queries?.toString() ?? "");
       setWebAgentMaxIterations(p.web_agent_max_iterations ?? 3);
@@ -161,8 +159,7 @@ export default function ConfigurePage() {
         structure_hint: structureHint,
         pipeline_config: pipelineConfig,
         latex_template: latexTemplate || null,
-        research_mode: researchMode || researchOnly,
-        research_only: researchOnly,
+        research_mode: researchMode,
         web_tool_ids: webToolIds.length > 0 ? webToolIds : null,
         research_max_queries: (() => {
           const v = parseInt(researchMaxQueriesStr, 10);

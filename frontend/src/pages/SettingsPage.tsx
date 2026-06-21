@@ -141,6 +141,10 @@ export default function SettingsPage() {
   const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<ProviderInput>(EMPTY);
+  const [paramsRaw, setParamsRaw] = useState("");
+  const [paramsError, setParamsError] = useState<string | null>(null);
+  const [editParamsRaw, setEditParamsRaw] = useState("");
+  const [editParamsError, setEditParamsError] = useState<string | null>(null);
   const [modelOpen, setModelOpen] = useState(false);
   const modelDropdownRef = useRef<HTMLDivElement>(null);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
@@ -185,8 +189,19 @@ export default function SettingsPage() {
   async function create() {
     setBusy(true);
     try {
-      await api.createProvider(form);
+      const payload = { ...form };
+      if (paramsRaw.trim()) {
+        try {
+          payload.params = JSON.parse(paramsRaw);
+        } catch {
+          setParamsError("Invalid JSON in params");
+          return;
+        }
+      }
+      await api.createProvider(payload);
       setForm(EMPTY);
+      setParamsRaw("");
+      setParamsError(null);
       setTestResult(null);
       loadProviders();
     } finally {
@@ -227,6 +242,8 @@ export default function SettingsPage() {
       fallback_provider_id: p.fallback_provider_id,
       is_active: p.is_active,
     });
+    setEditParamsRaw(p.params ? JSON.stringify(p.params, null, 2) : "");
+    setEditParamsError(null);
   }
 
   async function saveEdit() {
@@ -238,6 +255,14 @@ export default function SettingsPage() {
         ...rest,
         ...(api_key ? { api_key } : {}),
       };
+      if (editParamsRaw.trim()) {
+        try {
+          payload.params = JSON.parse(editParamsRaw);
+        } catch {
+          setEditParamsError("Invalid JSON in params");
+          return;
+        }
+      }
       await api.updateProvider(editingId, payload);
       setEditingId(null);
       loadProviders();
@@ -550,6 +575,36 @@ export default function SettingsPage() {
           </div>
         </div>
 
+        {/* Params JSON editor */}
+        <div>
+          <label className="mb-1 flex items-center gap-1 text-xs font-medium text-ink-500">
+            Params (JSON)
+            <span className="font-normal text-ink-400">
+              — temperature, max_tokens, extra_params, etc.
+            </span>
+          </label>
+          <textarea
+            className="input min-h-[80px] w-full font-mono text-xs"
+            value={paramsRaw}
+            onChange={(e) => {
+              setParamsRaw(e.target.value);
+              setParamsError(null);
+              if (e.target.value.trim()) {
+                try {
+                  JSON.parse(e.target.value);
+                } catch {
+                  setParamsError("Invalid JSON");
+                }
+              }
+            }}
+            placeholder='{ "temperature": 0.2, "extra_params": { "repeat_penalty": 1.1, "repeat_last_n": 64 } }'
+            rows={3}
+          />
+          {paramsError && (
+            <p className="mt-1 text-xs text-red-500">{paramsError}</p>
+          )}
+        </div>
+
         {testResult && <TestResultCard result={testResult} />}
 
         <div className="flex gap-2">
@@ -559,7 +614,7 @@ export default function SettingsPage() {
           <button
             className="btn-primary"
             onClick={create}
-            disabled={busy || !form.name.trim()}
+            disabled={busy || !form.name.trim() || paramsError !== null}
           >
             <Plus size={16} /> Add provider
           </button>
@@ -691,17 +746,49 @@ export default function SettingsPage() {
                     />
                   </div>
                 </div>
+                {/* Params JSON editor */}
+                <div className="mt-3">
+                  <label className="mb-1 flex items-center gap-1 text-xs font-medium text-ink-500">
+                    Params (JSON)
+                    <span className="font-normal text-ink-400">
+                      — temperature, max_tokens, extra_params, etc.
+                    </span>
+                  </label>
+                  <textarea
+                    className="input min-h-[80px] w-full font-mono text-xs"
+                    value={editParamsRaw}
+                    onChange={(e) => {
+                      setEditParamsRaw(e.target.value);
+                      setEditParamsError(null);
+                      if (e.target.value.trim()) {
+                        try {
+                          JSON.parse(e.target.value);
+                        } catch {
+                          setEditParamsError("Invalid JSON");
+                        }
+                      }
+                    }}
+                    placeholder='{ "extra_params": { "repeat_penalty": 1.1, "repeat_last_n": 64 } }'
+                    rows={3}
+                  />
+                  {editParamsError && (
+                    <p className="mt-1 text-xs text-red-500">{editParamsError}</p>
+                  )}
+                </div>
                 <div className="mt-3 flex gap-2">
                   <button
                     className="btn-primary text-xs"
                     onClick={saveEdit}
-                    disabled={busy}
+                    disabled={busy || editParamsError !== null}
                   >
                     <Check size={14} /> Save
                   </button>
                   <button
                     className="btn-ghost text-xs"
-                    onClick={() => setEditingId(null)}
+                    onClick={() => {
+                      setEditingId(null);
+                      setEditParamsError(null);
+                    }}
                   >
                     Cancel
                   </button>

@@ -4,14 +4,12 @@ import {
   ExternalLink,
   Gavel,
   GitGraph,
-  Globe,
   Hammer,
   List,
   Loader2,
   Play,
   Search,
   Settings2,
-  Sparkles,
   Square,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -29,35 +27,8 @@ import ProgressTimeline from "../components/ProgressTimeline";
 import ProviderSelect from "../components/ProviderSelect";
 import { useGenerateWs } from "../hooks/useGenerateWs";
 import { api, type Project } from "../lib/api";
-import { cn } from "../lib/utils";
+import { cn, getResearchSourceStyle } from "../lib/utils";
 import { useAppStore } from "../stores/appStore";
-
-const RESEARCH_SOURCE_ICONS: Record<string, React.ReactNode> = {
-  arxiv: <span className="font-bold text-[9px]">A</span>,
-  wikipedia: <Globe size={11} />,
-  tavily: <Search size={11} />,
-  perplexity: <Sparkles size={11} />,
-};
-const RESEARCH_SOURCE_COLORS: Record<string, string> = {
-  arxiv: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
-  wikipedia: "bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300",
-  tavily: "bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300",
-  perplexity: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
-};
-
-function getResearchSourceIcon(source: string): React.ReactNode {
-  const key = Object.keys(RESEARCH_SOURCE_ICONS).find((k) =>
-    source.toLowerCase().includes(k),
-  );
-  return RESEARCH_SOURCE_ICONS[key ?? ""] ?? <Globe size={11} />;
-}
-
-function getResearchSourceColor(source: string): string {
-  const key = Object.keys(RESEARCH_SOURCE_COLORS).find((k) =>
-    source.toLowerCase().includes(k),
-  );
-  return RESEARCH_SOURCE_COLORS[key ?? ""] ?? "bg-ink-100 text-ink-500 dark:bg-ink-800 dark:text-ink-400";
-}
 
 export default function GeneratePage() {
   const { projectId } = useParams();
@@ -237,6 +208,7 @@ export default function GeneratePage() {
             <ProgressTimeline
               events={events}
               latest={latest}
+              selectedNode={selectedNode}
               onNodeClick={(nid) => {
                 setSelectedNode(nid);
                 setView("graph");
@@ -252,6 +224,7 @@ export default function GeneratePage() {
           <ProgressTimeline
             events={events}
             latest={latest}
+            selectedNode={selectedNode}
             onNodeClick={(nid) => {
               setSelectedNode(nid);
               setView("graph");
@@ -285,17 +258,16 @@ export default function GeneratePage() {
           </div>
           <ul className="space-y-1.5 max-h-64 overflow-auto">
             {latest.research_results.map((r, i) => {
-              const sourceIcon = getResearchSourceIcon(r.source);
-              const sourceColor = getResearchSourceColor(r.source);
+              const sourceStyle = getResearchSourceStyle(r.source);
               return (
                 <li key={i} className="flex items-start gap-2 rounded-lg px-3 py-2 text-sm transition-colors hover:bg-ink-50 dark:hover:bg-ink-900/50">
                   <span
                     className={cn(
                       "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-[10px]",
-                      sourceColor,
+                      sourceStyle.color,
                     )}
                   >
-                    {sourceIcon}
+                    {sourceStyle.icon}
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="truncate font-medium text-ink-700 dark:text-ink-200">

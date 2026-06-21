@@ -245,7 +245,7 @@ async def run_generation(
             documents: list[dict[str, Any]] = []
             loop = asyncio.get_running_loop()
 
-            research_active = bool(project.research_mode) or bool(project.research_only)
+            research_active = bool(project.research_mode)
             if not ordered_sources and not research_active:
                 raise RuntimeError("Nessun documento né ricerca configurata")
 
@@ -331,21 +331,7 @@ async def run_generation(
                     )
                 )
 
-            # When research_only is True, skip PDF extraction entirely.
-            skip_extraction = bool(project.research_only)
-            if skip_extraction and ordered_sources:
-                await manager.emit(
-                    project_id,
-                    {
-                        "stage": "extracting",
-                        "node": "extract",
-                        "message": "Fonti ignorate (modalità research-only)",
-                        "progress": 2,
-                        "level": "info",
-                        "detail": f"{n_src} sorgenti saltate — solo ricerca web",
-                    },
-                )
-            if ordered_sources and not skip_extraction:
+            if ordered_sources:
                 await manager.emit(
                     project_id,
                     {
@@ -361,8 +347,6 @@ async def run_generation(
                 extractor = None
                 if has_pdf:
                     extractor = get_extractor(
-                        project.extractor_backend,
-                        enable_ocr=bool(project.enable_ocr),
                         pipeline_config=project.pipeline_config,
                         ocr_lang=project.ocr_lang,
                     )
@@ -371,8 +355,6 @@ async def run_generation(
                     "Progetto %s: estrazione di %d sorgenti (backend=%s, ocr=%s)",
                     project_id,
                     n_src,
-                    project.extractor_backend,
-                    bool(project.enable_ocr),
                 )
                 for si, src in enumerate(ordered_sources, start=1):
                     base_progress = 2 + int(3 * si / max(1, n_src))
@@ -625,7 +607,7 @@ async def run_generation(
             # so research_node is a no-op.  Strip web_tool_configs — not needed
             # since the search already completed.
             _web_tool_configs: list[dict[str, Any]] | None = web_tool_configs
-            _research_mode = bool(project.research_mode) or bool(project.research_only)
+            _research_mode = bool(project.research_mode)
             if web_analyses is not None:
                 _research_mode = False  # research already done
                 _web_tool_configs = None
@@ -738,7 +720,9 @@ def build_llm_config(provider: ProviderConfig, model: str | None) -> dict[str, A
         "api_key": api_key,
         "base_url": provider.base_url,
         "temperature": params.get("temperature", 0.2),
-        "max_tokens": params.get("max_tokens"),
+        "max_tokens": params.get("max_tokens")
+        if params.get("max_tokens") is not None
+        else settings.llm_max_tokens,
         "top_p": params.get("top_p"),
         "extra_params": params.get("extra_params", {}),
         "rpm_limit": provider.rpm_limit,  # per-provider RPM override

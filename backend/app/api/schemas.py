@@ -178,16 +178,12 @@ class ProjectUpdate(BaseModel):
     abstract: str | None = None
     cover_date: str | None = None
     structure_hint: str | None = None
-    extractor_backend: str | None = None
-    enable_ocr: bool | None = None
     ocr_lang: str | None = None
     judge_vision: bool | None = None
     # Let the writer LLM supplement with its own knowledge.
     writer_use_knowledge: bool | None = None
     # Research-based generation mode (no PDFs needed).
     research_mode: bool | None = None
-    # When True, ONLY use web research — skip PDF extraction entirely.
-    research_only: bool | None = None
     web_tool_ids: list[int] | None = None
     research_max_queries: int | None = None
     web_agent_max_iterations: int | None = None
@@ -220,14 +216,11 @@ class ProjectOut(BaseModel):
     abstract: str | None = None
     cover_date: str | None = None
     structure_hint: str | None = None
-    extractor_backend: str | None = None
-    enable_ocr: bool | None = None
     ocr_lang: str | None = None
     judge_vision: bool | None = None
     latex_template: str | None = None
     writer_use_knowledge: bool | None = None
     research_mode: bool | None = None
-    research_only: bool | None = None
     web_tool_ids: list[int] | None = None
     research_max_queries: int | None = None
     web_agent_max_iterations: int | None = None

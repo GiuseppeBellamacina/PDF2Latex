@@ -1318,7 +1318,7 @@ def get_extractor(
     ``ocr_lang`` is the per-project OCR language (e.g. ``"ita+eng"``). When left
     empty, the global ``settings.ocr_lang`` is used as fallback.
     """
-    ocr = settings.enable_ocr if enable_ocr is None else enable_ocr
+    ocr = True if enable_ocr is None else enable_ocr
     lang = ocr_lang or settings.ocr_lang
 
     if pipeline_config:
@@ -1340,7 +1340,7 @@ def get_extractor(
             ocr_lang=lang,
         )
 
-    backend = (backend or settings.extractor_backend).lower()
+    backend = (backend or "hybrid").lower()
     if ocr and not tesseract_available():
         logger.warning("OCR richiesto ma non disponibile: proseguo senza OCR.")
     logger.info("Extractor backend=%s ocr=%s lang=%s", backend, ocr, lang)

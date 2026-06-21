@@ -381,13 +381,11 @@ async def create_project(
     abstract: str = Form(""),
     cover_date: str = Form(""),
     structure_hint: str = Form(""),
-    extractor_backend: str = Form("hybrid"),
     ocr_lang: str = Form(""),
     latex_template: str = Form("default"),
     writer_use_knowledge: bool = Form(False),
     user_sources: str = Form(""),
     research_mode: bool = Form(False),
-    research_only: bool = Form(False),
     web_tool_ids: str = Form(""),
     research_max_queries: int = Form(0),
     web_agent_max_iterations: int = Form(3),
@@ -399,7 +397,7 @@ async def create_project(
 ):
     has_files = any((f.filename or "").strip() for f in files)
     url_list = [u.strip() for u in urls.split("\n") if u.strip()]
-    has_research = bool(research_mode) or bool(research_only)
+    has_research = bool(research_mode)
     if not has_files and not url_list and not has_research:
         raise HTTPException(400, "Nessuna fonte caricata e ricerca web non attiva")
 
@@ -414,7 +412,7 @@ async def create_project(
                 except ValueError:
                     raise HTTPException(400, f"ID web tool non valido: {raw}")
 
-    # Validate web_tool_ids when research_mode is enabled.
+    # Validate web_tool_ids only when research_mode is enabled.
     if research_mode and _parsed_tool_ids:
         for tid in _parsed_tool_ids:
             web_tool = await db.get(WebToolConfig, tid)
@@ -435,15 +433,13 @@ async def create_project(
         abstract=abstract or None,
         cover_date=cover_date or None,
         structure_hint=structure_hint or None,
-        extractor_backend=extractor_backend or "hybrid",
         ocr_lang=ocr_lang or None,
         latex_template=latex_template or "default",
         writer_use_knowledge=writer_use_knowledge,
         user_sources=_parse_user_sources(user_sources)
         if user_sources.strip()
         else None,
-        research_mode=bool(research_mode) or bool(research_only),
-        research_only=bool(research_only),
+        research_mode=bool(research_mode),
         web_tool_ids=_parsed_tool_ids if _parsed_tool_ids else None,
         research_max_queries=research_max_queries if research_max_queries > 0 else None,
         web_agent_max_iterations=web_agent_max_iterations,
@@ -611,11 +607,6 @@ async def update_project(
 
     for field, value in data.items():
         setattr(project, field, value)
-
-    # When research_only is toggled on, auto-enable research_mode too
-    # (mirrors create_project behaviour).
-    if project.research_only and not project.research_mode:
-        project.research_mode = True
 
     # Validate web_tool_ids only when research_mode or web_tool_ids were
     # explicitly changed in this request (not on unrelated PATCH calls).

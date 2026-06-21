@@ -18,9 +18,7 @@
 #  These DB columns override the global defaults in this file:
 #
 #    Project table:              ProviderConfig table:
-#    +-- extractor_backend       +-- rpm_limit      (per-provider RPM cap)
-#    +-- enable_ocr
-#    +-- ocr_lang
+#    +-- ocr_lang                +-- rpm_limit      (per-provider RPM cap)
 #    +-- latex_template           (default|paper|thesis-oneside|thesis-twoside)
 #    +-- judge_vision
 #    +-- writer_use_knowledge
@@ -52,40 +50,39 @@ cache_dir: ./storage/cache
 db_path: ./storage/app.db
 
 # Logging
-log_level: INFO          # DEBUG | INFO | WARNING | ERROR
+log_level: INFO # DEBUG | INFO | WARNING | ERROR
 log_to_file: true
 
 # ── LaTeX ────────────────────────────────────────────────────────────────
 pdflatex_bin: pdflatex
 bibtex_bin: bibtex
 latex_compile_passes: 2
-latex_lint: true          # deterministic repair pass before pdflatex
-latex_template: default   # default | paper | thesis-oneside | thesis-twoside
+latex_lint: true # deterministic repair pass before pdflatex
+latex_template: default # default | paper | thesis-oneside | thesis-twoside
 
 # ── PDF extraction ───────────────────────────────────────────────────────
-extractor_backend: hybrid  # pymupdf | docling | hybrid
-enable_ocr: true
 ocr_lang: ita+eng
-tesseract_cmd: ""           # explicit tesseract path (empty = auto-detect)
+tesseract_cmd: "" # explicit tesseract path (empty = auto-detect)
 render_dpi: 130
-extraction_cache: true     # cache Docling markdown by file hash
+extraction_cache: true # cache Docling markdown by file hash
 dedup_headers_footers: true # strip recurring page headers/footers
 
 # Docling subprocess settings (isolated chunks for memory safety)
-docling_max_pages: 200      # skip Docling above this page count
-docling_chunk_pages: 8      # pages per isolated subprocess chunk
+docling_max_pages: 200 # skip Docling above this page count
+docling_chunk_pages: 8 # pages per isolated subprocess chunk
 docling_enable_tables: true # recover tables as structured markdown
 docling_subprocess_timeout: 600 # seconds per chunk before timeout
 
 # ── LLM orchestration ────────────────────────────────────────────────────
-llm_max_concurrency: 4    # max simultaneous LLM calls
-llm_max_retries: 4        # retries on transient errors (429/5xx)
+llm_max_concurrency: 1 # max simultaneous LLM calls
+llm_max_retries: 4 # retries on transient errors (429/5xx)
 llm_retry_base_delay: 1.5 # seconds; exponential backoff base
-llm_request_timeout: 600  # seconds per LLM call
+llm_request_timeout: 600 # seconds per LLM call
+llm_max_tokens: 8192 # global token budget per LLM call (prevents runaway loops)
 
 # RPM (requests per minute) gate
 llm_rpm_enabled: true
-llm_rpm_limit: 30         # max requests per 60 s window
+llm_rpm_limit: 30 # max requests per 60 s window
 
 # Per-role sampling temperatures (extraction tasks want determinism)
 analyzer_temperature: 0.0
@@ -95,40 +92,40 @@ reviewer_temperature: 0.0
 judge_temperature: 0.0
 
 # Character budgets per chunk / per section
-analyzer_chunk_chars: 16000    # map-reduce chunk size for long docs
-analyzer_max_chunks: 12        # safety cap on chunks per document
-writer_source_chars: 14000     # relevance-selected source budget per section
+analyzer_chunk_chars: 16000 # map-reduce chunk size for long docs
+analyzer_max_chunks: 12 # safety cap on chunks per document
+writer_source_chars: 14000 # relevance-selected source budget per section
 writer_max_source_chars: 50000 # cap when many sources, 0 = no cap
-writer_expand_threshold: 600   # chars below which a second expansion pass runs
-writer_use_knowledge: false    # let writer use its own knowledge
+writer_expand_threshold: 600 # chars below which a second expansion pass runs
+writer_use_knowledge: false # let writer use its own knowledge
 
 # ── Judge ────────────────────────────────────────────────────────────────
 judge_enabled: true
 judge_max_iterations: 1
-judge_vision: false            # requires a multimodal model (gpt-4o, etc.)
-judge_layout_inspect: true     # deterministic layout inspection (no LLM)
-judge_vision_max_pages: 12     # cap pages sent to the vision model
-judge_vision_dpi: 110          # render DPI for judged page images
+judge_vision: false # requires a multimodal model (gpt-4o, etc.)
+judge_layout_inspect: true # deterministic layout inspection (no LLM)
+judge_vision_max_pages: 12 # cap pages sent to the vision model
+judge_vision_dpi: 110 # render DPI for judged page images
 
 # ── Figures ──────────────────────────────────────────────────────────────
-max_figures_per_section: 4     # hard cap per section
-figure_width_ratio: 0.62       # \includegraphics width as fraction of line
-figure_max_height_ratio: 0.42  # cap height as fraction of \textheight
+max_figures_per_section: 4 # hard cap per section
+figure_width_ratio: 0.62 # \includegraphics width as fraction of line
+figure_max_height_ratio: 0.42 # cap height as fraction of \textheight
 
 # ── Quality checks ───────────────────────────────────────────────────────
-coherence_enabled: true    # cross-chapter consistency check
-citations_enabled: true    # citation audit (uncited sources, unknown keys)
+coherence_enabled: true # cross-chapter consistency check
+citations_enabled: true # citation audit (uncited sources, unknown keys)
 
 # ── Chapter overview ─────────────────────────────────────────────────────
-overview_enabled: true         # prepend per-chapter synopsis after TOC
-overview_min_chapters: 3       # also triggered when len(documents) > 1
+overview_enabled: true # prepend per-chapter synopsis after TOC
+overview_min_chapters: 3 # also triggered when len(documents) > 1
 
 # ── Web Research ─────────────────────────────────────────────────────────
-research_max_queries: 5            # max parallel search queries per run
-research_results_per_query: 5      # top results per query
-research_fetch_pages: true         # fetch full page content
-research_max_fetch_concurrency: 4  # max simultaneous page fetches
-research_page_max_chars: 8000      # cap fetched page text for LLM budgets
+research_max_queries: 5 # max parallel search queries per run
+research_results_per_query: 5 # top results per query
+research_fetch_pages: true # fetch full page content
+research_max_fetch_concurrency: 4 # max simultaneous page fetches
+research_page_max_chars: 8000 # cap fetched page text for LLM budgets
 
 # ── CORS ─────────────────────────────────────────────────────────────────
 cors_origins:
