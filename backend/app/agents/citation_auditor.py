@@ -124,10 +124,19 @@ async def audit_citations(
             set(uncited_user + list(verdict.uncited_user_sources or []))
         )
         all_unknown = sorted(set(unknown + list(verdict.unknown_citations or [])))
-        approved = verdict.approved and not all_unknown and not all_uncited
-        score = max(
-            0, (verdict.score or 80) - len(all_unknown) * 10 - len(all_uncited) * 15
+        # Deterministic issues (unknown keys, uncited sources) always block
+        # approval.  When both checks are clean, trust the LLM (or auto-approve
+        # if the LLM only reports ≤1 minor issue).
+        approved = (not all_unknown and not all_uncited) and (
+            verdict.approved or len(verdict.issues or []) <= 1
         )
+        score = max(
+            0,
+            (verdict.score or 80) - len(all_unknown) * 10 - len(all_uncited) * 15,
+        )
+        # When deterministically clean, floor the score at 80.
+        if not all_unknown and not all_uncited:
+            score = max(score, 80)
 
         logger.info(
             "Citation audit: approved=%s score=%s uncited_user=%d unknown=%d issues=%d",
@@ -148,7 +157,7 @@ async def audit_citations(
     except Exception as exc:  # noqa: BLE001 — audit is best-effort
         logger.warning("Citation audit failed: %s", exc)
         return {
-            "approved": not unknown,
+            "approved": not unknown and not uncited_user,
             "score": max(0, 100 - len(unknown) * 10 - len(uncited_user) * 15),
             "uncited_user_sources": uncited_user,
             "unknown_citations": unknown,

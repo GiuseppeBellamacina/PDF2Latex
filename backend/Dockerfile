@@ -14,8 +14,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
-COPY pyproject.toml README.md ./
-COPY app ./app
+COPY backend/pyproject.toml backend/README.md ./
+COPY backend/app ./app
+COPY backend/config.yaml /app/config.yaml
 RUN uv sync
 
 EXPOSE 8000

@@ -141,6 +141,69 @@ def _balance_inline_math(tex: str) -> tuple[str, list[str]]:
     return tex, notes
 
 
+def _escape_hash_in_text(tex: str) -> tuple[str, int]:
+    r"""Escape bare ``#`` in text mode (outside verbatim, math, URLs).
+
+    An unescaped ``#`` is treated by TeX as a macro parameter character and
+    triggers ``! You can't use `macro parameter character #' in horizontal mode``.
+    The fix replaces ``#`` with ``\#`` but never touches ``\#``, math mode
+    content (``$...$``, ``$$...$$``, ``\(...\)``, ``\[...\]``), or verbatim
+    environments where ``#`` is literal and must stay untouched.
+    """
+    import re as _re
+
+    # Tokenize: protect math and verbatim regions, escape # in the rest.
+    math_pattern = _re.compile(
+        r"(\\\[.*?\\\])|(\\\(.*?\\\))|(\$\$.*?\$\$)|(\$[^$]+\$)",
+        _re.DOTALL,
+    )
+    verb_pattern = _re.compile(
+        r"(\\begin\{verbatim\}.*?\\end\{verbatim\})",
+        _re.DOTALL,
+    )
+    url_escape = _re.compile(r"\\url\{[^}]*\}")  # \url{...} — # is safe here
+
+    # Collect protected regions (start, end) pairs.
+    protected: list[tuple[int, int]] = []
+    for pat in (math_pattern, verb_pattern, url_escape):
+        for m in pat.finditer(tex):
+            protected.append((m.start(), m.end()))
+    protected.sort()
+
+    # Merge overlapping protected regions.
+    merged: list[tuple[int, int]] = []
+    for s, e in protected:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+
+    # Build output: character by character, escaping # in unprotected text.
+    result: list[str] = []
+    pos = 0
+    count = 0
+    for s, e in merged:
+        # Append text before this protected region, escaping #
+        chunk = tex[pos:s]
+        # Only escape # that are NOT already \#
+        fixed = _re.sub(r"(?<!\\)#", r"\\#", chunk)
+        count += chunk.count("#") - (len(_re.findall(r"\\#", chunk)))
+        result.append(fixed)
+        # Append protected region verbatim
+        result.append(tex[s:e])
+        pos = e
+    # Tail after last protected region
+    if pos < len(tex):
+        chunk = tex[pos:]
+        fixed = _re.sub(r"(?<!\\)#", r"\\#", chunk)
+        count += chunk.count("#") - (len(_re.findall(r"\\#", chunk)))
+        result.append(fixed)
+    else:
+        pass  # already added everything
+
+    return "".join(result), count
+
+
 def lint_latex(tex: str) -> tuple[str, list[str]]:
     """Apply conservative deterministic fixes. Returns ``(fixed, notes)``."""
     notes: list[str] = []
@@ -152,6 +215,10 @@ def lint_latex(tex: str) -> tuple[str, list[str]]:
     tex, n_heading = _strip_heading_numbering(tex)
     if n_heading:
         notes.append(f"rimossa numerazione manuale da {n_heading} titoli")
+
+    tex, n_hash = _escape_hash_in_text(tex)
+    if n_hash:
+        notes.append(f"escapati {n_hash} caratteri '#' in modalità testo")
 
     tex, env_notes = _balance_environments(tex)
     notes.extend(env_notes)

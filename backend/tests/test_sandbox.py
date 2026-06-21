@@ -223,8 +223,93 @@ async def test_sandbox_web_page_fetch():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# LLM providers
+# Extraction cache (file-hash-based)
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.sandbox
+def test_sandbox_figure_cache_fast_path(monkeypatch, tmp_path):
+    """`extract_figures` caches by file hash → second call is instant."""
+    from app.core.config import settings
+    from app.services.extractor import PyMuPDFExtractor
+
+    if not _PDF.exists():
+        pytest.skip(f"Asset missing: {_PDF}")
+
+    monkeypatch.setattr(settings, "extraction_cache", True)
+    monkeypatch.setattr(settings, "cache_dir", tmp_path / "cache")
+
+    figures_dir = tmp_path / "figures"
+    extractor = PyMuPDFExtractor(render_dpi=72, enable_ocr=False)
+
+    # First extraction populates cache.
+    import time
+
+    t0 = time.perf_counter()
+    first = extractor.extract_figures(_PDF, figures_dir)
+    t_first = time.perf_counter() - t0
+
+    # Second extraction should hit the cache (near-instant).
+    t0 = time.perf_counter()
+    second = extractor.extract_figures(_PDF, figures_dir)
+    t_second = time.perf_counter() - t0
+
+    assert len(second) == len(first), (
+        f"Cached result should match: {len(second)} vs {len(first)}"
+    )
+    for a, b in zip(first, second):
+        assert a.rel_path == b.rel_path
+        assert a.page == b.page
+        assert a.caption == b.caption
+        assert a.score == b.score
+        assert a.suggested == b.suggested
+        assert a.context_text == b.context_text
+
+    if len(first) > 0:
+        assert t_second < max(0.5, t_first * 0.30), (
+            f"Cache hit should be fast: first={t_first:.2f}s, second={t_second:.2f}s"
+        )
+
+
+@pytest.mark.sandbox
+def test_sandbox_figure_cache_extract_fast_path(monkeypatch, tmp_path):
+    """`extract` skips figure extraction when cache is warm → much faster."""
+    from app.core.config import settings
+    from app.services.extractor import PyMuPDFExtractor
+
+    if not _PDF.exists():
+        pytest.skip(f"Asset missing: {_PDF}")
+
+    monkeypatch.setattr(settings, "extraction_cache", True)
+    monkeypatch.setattr(settings, "cache_dir", tmp_path / "cache")
+
+    figures_dir = tmp_path / "figures"
+    extractor = PyMuPDFExtractor(render_dpi=72, enable_ocr=False)
+
+    import time
+
+    # First extraction populates cache.
+    t0 = time.perf_counter()
+    first = extractor.extract(_PDF, figures_dir)
+    t_first = time.perf_counter() - t0
+
+    # Second extraction should skip figure extraction entirely.
+    t0 = time.perf_counter()
+    second = extractor.extract(_PDF, figures_dir)
+    t_second = time.perf_counter() - t0
+
+    assert second.n_pages == first.n_pages
+    # Figure list should be identical.
+    assert sorted(second.figures) == sorted(first.figures)
+    # Text should still be extracted (cache only skips figures).
+    for p2, p1 in zip(second.pages, first.pages):
+        assert p2.page == p1.page
+        assert p2.source == p1.source
+
+    if first.figures:
+        assert t_second < max(1.0, t_first * 0.30), (
+            f"Cache hit should be faster: first={t_first:.2f}s, second={t_second:.2f}s"
+        )
 
 
 @pytest.mark.sandbox

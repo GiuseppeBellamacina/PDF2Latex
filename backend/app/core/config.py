@@ -1,8 +1,18 @@
-"""Application configuration loaded from environment / .env file."""
+"""Application configuration loaded from config.yaml (non-sensitive) and
+.env (secrets), with environment-variable overrides for both.
+
+Priority: env vars > .env > config.yaml > code defaults
+"""
 
 from pathlib import Path
+from typing import Any, Tuple, Type
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    YamlConfigSettingsSource,
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent  # backend/
 STORAGE_DIR = BASE_DIR / "storage"
@@ -16,7 +26,8 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
-    # Storage paths
+    # Storage paths — relative values from config.yaml are resolved against
+    # BASE_DIR (backend/) automatically.  Absolute paths pass through unchanged.
     data_dir: Path = STORAGE_DIR
     uploads_dir: Path = STORAGE_DIR / "uploads"
     output_dir: Path = STORAGE_DIR / "output"
@@ -38,6 +49,8 @@ class Settings(BaseSettings):
     latex_template: str = "default"  # default | paper | thesis-oneside | thesis-twoside
 
     # PDF extraction
+    extractor_backend: str = "hybrid"  # pymupdf | docling | hybrid (default)
+    enable_ocr: bool = True
     ocr_lang: str = "ita+eng"  # tesseract language(s); '+' to combine
     # Explicit path to the tesseract executable. Leave empty to auto-detect:
     # the app looks on PATH and in the standard Windows install locations
@@ -60,7 +73,12 @@ class Settings(BaseSettings):
     llm_max_concurrency: int = 4  # max simultaneous LLM calls (fan-out cap)
     llm_max_retries: int = 4  # retries on transient errors (429/5xx/timeouts)
     llm_retry_base_delay: float = 1.5  # seconds; exponential backoff base
-    llm_request_timeout: int = 180  # seconds per LLM call
+    llm_request_timeout: int = 600  # seconds per LLM call
+    # RPM (requests per minute) gate: a single sliding-window scheduler that
+    # pauses callers when the per-minute budget is exhausted. Disable with
+    # ``llm_rpm_enabled=false``. Also settable per-LLM config (overrides this).
+    llm_rpm_enabled: bool = True
+    llm_rpm_limit: int = 30  # max requests per 60 s window
     # Per-role sampling temperatures (extraction tasks want determinism).
     analyzer_temperature: float = 0.0
     planner_temperature: float = 0.1
@@ -139,10 +157,41 @@ class Settings(BaseSettings):
     ]
 
     model_config = SettingsConfigDict(
+        yaml_file=str(BASE_DIR / "config.yaml"),
         env_file=".env",
         env_prefix="PDF2TEX_",
         extra="ignore",
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: Type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> Tuple[PydanticBaseSettingsSource, ...]:
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            YamlConfigSettingsSource(settings_cls),
+            file_secret_settings,
+        )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Resolve relative storage paths against BASE_DIR (backend/)."""
+        for field_name in (
+            "data_dir",
+            "uploads_dir",
+            "output_dir",
+            "cache_dir",
+            "db_path",
+        ):
+            p: Path = getattr(self, field_name)
+            if not p.is_absolute():
+                object.__setattr__(self, field_name, (BASE_DIR / p).resolve())
 
 
 settings = Settings()

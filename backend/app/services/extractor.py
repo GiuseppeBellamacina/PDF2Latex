@@ -544,6 +544,21 @@ class PyMuPDFExtractor(BaseExtractor):
     def extract_figures(self, pdf_path: Path, figures_dir: Path) -> list[FigureInfo]:
         import fitz  # PyMuPDF
 
+        # ── Cache hit: reuse previously extracted figure metadata ─────
+        cached = _check_figure_cache(
+            pdf_path,
+            self.render_dpi,
+            figures_dir,
+            ocr_engine=self.ocr_engine,
+            ocr_lang=self.ocr_lang,
+            ocr_figures=True,
+        )
+        if cached is not None:
+            logger.info(
+                "Figure cache hit per %s (%d figure)", pdf_path.name, len(cached)
+            )
+            return cached
+
         figures_dir.mkdir(parents=True, exist_ok=True)
         doc = fitz.open(pdf_path)
         slug = _slug(pdf_path.name)
@@ -569,6 +584,14 @@ class PyMuPDFExtractor(BaseExtractor):
             )
         doc.close()
         logger.info("Estratte %d figure da %s", len(out), pdf_path.name)
+        _save_figure_cache(
+            pdf_path,
+            self.render_dpi,
+            out,
+            ocr_engine=self.ocr_engine,
+            ocr_lang=self.ocr_lang,
+            ocr_figures=True,
+        )
         return out
 
     def extract(
@@ -581,7 +604,6 @@ class PyMuPDFExtractor(BaseExtractor):
         import fitz  # PyMuPDF
 
         figures_dir.mkdir(parents=True, exist_ok=True)
-        doc = fitz.open(pdf_path)
         zoom = self.render_dpi / 72.0
         mat = fitz.Matrix(zoom, zoom)
         slug = _slug(pdf_path.name)
@@ -599,6 +621,31 @@ class PyMuPDFExtractor(BaseExtractor):
                 f"OCR {'attivo (' + self.ocr_engine + ')' if ocr_active else 'non attivo'}"
             ),
         )
+
+        doc = fitz.open(pdf_path)
+
+        # ── Figure cache check ──────────────────────────────────────
+        # When the figures were already extracted at upload time (and are
+        # still on disk), skip the expensive per-page image rendering,
+        # OCR, caption matching and scoring entirely.  Text extraction
+        # is fast and still runs on every page.
+        cached_figs = _check_figure_cache(
+            pdf_path,
+            self.render_dpi,
+            figures_dir,
+            ocr_engine=self.ocr_engine,
+            ocr_lang=self.ocr_lang,
+            ocr_figures=False,
+        )
+        all_extracted: list[FigureInfo] = []
+        if cached_figs is not None:
+            logger.info(
+                "PyMuPDF: figure cache hit per %s (%d figure)",
+                pdf_path.name,
+                len(cached_figs),
+            )
+            figures = [fi.rel_path for fi in cached_figs]
+
         for i in range(1, doc.page_count + 1):
             if cancel_token:
                 cancel_token.check()
@@ -620,28 +667,43 @@ class PyMuPDFExtractor(BaseExtractor):
                     source = "ocr"
                     ocr_used += 1
 
-            # Extract embedded raster figures on this page.
-            if len(figures) < MAX_FIGURES_PER_DOC:
-                figures.extend(
-                    fi.rel_path
-                    for fi in self._extract_page_figures(
-                        fitz,
-                        doc,
-                        page,
-                        figures_dir,
-                        slug,
-                        i,
-                        seen_xrefs,
-                        ocr_engine=self.ocr_engine,
-                        ocr_lang=self.ocr_lang,
-                    )
+            # Extract embedded raster figures on this page — skipped when
+            # the figure cache already provided the full list.
+            # At generation time, captions come from the DB (Figure table),
+            # not from the extractor, so figure OCR is deliberately OFF.
+            if cached_figs is None and len(figures) < MAX_FIGURES_PER_DOC:
+                page_figs = self._extract_page_figures(
+                    fitz,
+                    doc,
+                    page,
+                    figures_dir,
+                    slug,
+                    i,
+                    seen_xrefs,
+                    ocr_figures=False,
+                    ocr_engine=self.ocr_engine,
+                    ocr_lang=self.ocr_lang,
                 )
+                all_extracted.extend(page_figs)
+                figures.extend(fi.rel_path for fi in page_figs)
 
             pages.append(
                 PageContent(page=i, text=text, image_path=img_path_str, source=source)
             )
 
         doc.close()
+
+        # Save newly extracted figures to cache for subsequent runs.
+        if all_extracted:
+            _save_figure_cache(
+                pdf_path,
+                self.render_dpi,
+                all_extracted,
+                ocr_engine=self.ocr_engine,
+                ocr_lang=self.ocr_lang,
+                ocr_figures=False,
+            )
+
         logger.info(
             "PyMuPDF: %s -> %d pagine, %d figure, %d pagine via OCR",
             pdf_path.name,
@@ -755,6 +817,119 @@ def _docling_cache_path(pdf_path: Path) -> Path:
     cache_dir = settings.cache_dir / "docling"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir / f"{key}.md"
+
+
+def _check_docling_cache(pdf_path: Path) -> str | None:
+    """Return cached Docling markdown if available, else None.
+
+    Used as an early-return short-circuit in the extractors so that when a PDF
+    has already been converted to structured markdown, we can skip the full
+    PyMuPDF extraction (text + OCR + figures) entirely at generation time.
+    """
+    if not settings.extraction_cache:
+        return None
+    cache_path = _docling_cache_path(pdf_path)
+    try:
+        if cache_path.exists():
+            return cache_path.read_text(encoding="utf-8") or None
+    except OSError:
+        pass
+    return None
+
+
+def _figure_cache_path(
+    pdf_path: Path,
+    render_dpi: int,
+    ocr_engine: str,
+    ocr_lang: str,
+    ocr_figures: bool = True,
+) -> Path:
+    """Path for the per-PDF figure-metadata cache file."""
+    key = (
+        f"{_file_hash(pdf_path)}"
+        f"-dpi{render_dpi}"
+        f"-{ocr_engine}"
+        f"-{ocr_lang}"
+        f"-figocr{int(ocr_figures)}"
+    )
+    cache_dir = settings.cache_dir / "figures"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / f"{key}.json"
+
+
+def _check_figure_cache(
+    pdf_path: Path,
+    render_dpi: int,
+    figures_dir: Path,
+    ocr_engine: str = "tesseract",
+    ocr_lang: str = "ita+eng",
+    ocr_figures: bool = True,
+) -> list[FigureInfo] | None:
+    """Return cached figure metadata if available AND the PNG files still exist.
+
+    The cache stores ``FigureInfo`` as JSON.  Before trusting it we verify that
+    at least the first cached figure's PNG is still on disk — if the user wiped
+    the figures directory the JSON would be stale.
+
+    Returns ``None`` on cache miss, corrupt JSON, or missing PNG files.
+    """
+    import json
+
+    if not settings.extraction_cache:
+        return None
+    cache_path = _figure_cache_path(
+        pdf_path, render_dpi, ocr_engine, ocr_lang, ocr_figures
+    )
+    try:
+        if not cache_path.exists():
+            return None
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        if not isinstance(data, list) or not data:
+            return None
+        # Verify at least the first figure PNG still exists on disk.
+        rel = data[0].get("rel_path")
+        if rel and not (figures_dir.parent / rel).exists():
+            logger.debug("Figure cache: PNG mancante per %s, invalido", rel)
+            return None
+        return [FigureInfo(**item) for item in data]
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        logger.debug("Figure cache: lettura fallita per %s: %s", pdf_path.name, exc)
+        return None
+
+
+def _save_figure_cache(
+    pdf_path: Path,
+    render_dpi: int,
+    figures: list[FigureInfo],
+    ocr_engine: str = "tesseract",
+    ocr_lang: str = "ita+eng",
+    ocr_figures: bool = True,
+) -> None:
+    """Persist figure metadata to the JSON cache (best-effort)."""
+    import json
+
+    if not settings.extraction_cache or not figures:
+        return
+    cache_path = _figure_cache_path(
+        pdf_path, render_dpi, ocr_engine, ocr_lang, ocr_figures
+    )
+    try:
+        data = [
+            {
+                "rel_path": fi.rel_path,
+                "page": fi.page,
+                "caption": fi.caption,
+                "score": fi.score,
+                "suggested": fi.suggested,
+                "context_text": fi.context_text,
+            }
+            for fi in figures
+        ]
+        cache_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError as exc:
+        logger.debug("Figure cache: scrittura fallita: %s", exc)
 
 
 def _run_docling_chunk(slice_pdf: Path, timeout: int) -> str | None:
@@ -967,6 +1142,32 @@ class HybridExtractor(BaseExtractor):
         progress: ProgressCb = None,
         cancel_token: CancellationToken | None = None,
     ) -> ExtractedDocument:
+        # ── Fast path: if Docling markdown is already cached, skip the
+        # expensive PyMuPDF pass entirely.  At generation time figures come
+        # from the DB (extracted at upload), so we don't need them here.
+        cached_md = _check_docling_cache(pdf_path)
+        if cached_md:
+            logger.info(
+                "Hybrid: Docling cache hit per %s, salto PyMuPDF", pdf_path.name
+            )
+            _notify(
+                progress,
+                message=f"{pdf_path.name} testo dalla cache",
+                detail="struttura + tabelle già in cache, estrazione istantanea",
+                level="success",
+            )
+            n_pages = pdf_page_count(pdf_path)
+            dummy_pages = [
+                PageContent(page=i, text="", source="docling")
+                for i in range(1, n_pages + 1)
+            ]
+            return ExtractedDocument(
+                filename=pdf_path.name,
+                pages=dummy_pages,
+                figures=[],
+                rich_markdown=cached_md,
+            )
+
         doc = self._py.extract(pdf_path, figures_dir, progress, cancel_token)
 
         # Remove running headers/footers from the per-page text (improves both
@@ -1036,6 +1237,35 @@ class PipelineExtractor(BaseExtractor):
         cancel_token: CancellationToken | None = None,
     ) -> ExtractedDocument:
         from app.services import structure_engines
+
+        structure_tool = self.config.get("structure", "none")
+
+        # ── Fast path: when Docling is the selected structure tool and the
+        # markdown is already cached, skip the full PyMuPDF extraction.
+        if structure_tool == "docling":
+            cached_md = _check_docling_cache(pdf_path)
+            if cached_md:
+                logger.info(
+                    "Pipeline: Docling cache hit per %s, salto PyMuPDF",
+                    pdf_path.name,
+                )
+                _notify(
+                    progress,
+                    message=f"{pdf_path.name} testo dalla cache",
+                    detail="Docling già in cache, estrazione istantanea",
+                    level="success",
+                )
+                n_pages = pdf_page_count(pdf_path)
+                dummy_pages = [
+                    PageContent(page=i, text="", source="docling")
+                    for i in range(1, n_pages + 1)
+                ]
+                return ExtractedDocument(
+                    filename=pdf_path.name,
+                    pages=dummy_pages,
+                    figures=[],
+                    rich_markdown=cached_md,
+                )
 
         doc = self._py.extract(pdf_path, figures_dir, progress, cancel_token)
 

@@ -148,8 +148,8 @@ export default function PipelineGraph({ events, onNodeClick }: Props) {
         viewBox={`0 0 ${svgW} ${svgH}`}
         className="w-full min-w-[1200px]"
         style={{ fontFamily: "'Inter Variable', system-ui, sans-serif" }}
-        text-rendering="geometricPrecision"
-        shape-rendering="geometricPrecision"
+        text-rendering="optimizeLegibility"
+        shape-rendering="crispEdges"
       >
         <defs>
           <filter

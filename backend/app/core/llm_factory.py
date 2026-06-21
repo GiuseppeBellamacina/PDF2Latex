@@ -20,6 +20,7 @@ class LLMConfig:
     max_tokens: int | None = None
     top_p: float | None = None
     extra_params: dict[str, Any] = field(default_factory=dict)
+    rpm_limit: int | None = None  # per-provider RPM override (None → global default)
 
     def __post_init__(self) -> None:
         self.provider = self.provider.lower()
@@ -105,6 +106,10 @@ async def test_llm_connection(config: LLMConfig) -> dict[str, Any]:
 
     start = time.perf_counter()
     try:
+        # Honour the global RPM gate before making the test call.
+        from app.agents.utils import acquire_rpm_slot  # noqa: PLC0415 - avoid cycle
+
+        await acquire_rpm_slot("test-provider", rpm_limit=config.rpm_limit)
         result = await llm.ainvoke(prompt)
     except Exception as exc:  # noqa: BLE001 - surface any provider error to the UI
         latency_ms = int((time.perf_counter() - start) * 1000)

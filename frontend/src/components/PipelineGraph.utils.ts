@@ -271,15 +271,31 @@ export function deriveState(events: ProgressEvent[]): GraphState {
   }
 
   // Detect active nodes: a pending node is active when ALL its predecessors
-  // are completed. This correctly handles parallel branches (research+analyze
-  // both become active after extract completes) and the diamond merge.
+  // are completed OR it has no predecessors (root node). This correctly
+  // handles parallel branches (research+analyze both become active after
+  // extract completes) and the diamond merge.
   for (const nid of PHASE_ORDER) {
     if (nodes[nid] !== "pending") continue;
-    const allPredsDone = (predecessors[nid] ?? []).every(
-      (p) => nodes[p] === "completed",
-    );
-    if (allPredsDone) {
+    const preds = predecessors[nid] ?? [];
+    if (preds.length === 0) {
+      // Root node (no predecessors): active immediately.
       activeNodes.add(nid);
+    } else {
+      const allPredsDone = preds.every((p) => nodes[p] === "completed");
+      if (allPredsDone) {
+        activeNodes.add(nid);
+      }
+    }
+  }
+
+  // When research has events with raw results, mark as completed even if
+  // no explicit success event arrived (runner scenario).
+  if (nodes["research"] === "pending") {
+    const hasResearchResults = events.some(
+      (e) => e.node === "research" && e.research_results?.length,
+    );
+    if (hasResearchResults) {
+      nodes["research"] = "completed";
     }
   }
 
@@ -567,7 +583,15 @@ export function deriveNodeDetails(
   if (lines.length === 0) {
     // A node that is pending but in activeNodes is conceptually "in progress"
     const isActive = status === "pending" && state.activeNodes.has(nodeId);
-    if (isActive) lines.push("In progress…");
+    // Build predecessor map from EDGES to detect root nodes (no incoming edges).
+    const preds: Record<string, string[]> = {};
+    for (const n of MAIN_NODES) preds[n.id] = [];
+    for (const [from, to] of EDGES) {
+      preds[to].push(from);
+    }
+    const isRoot = (preds[nodeId] ?? []).length === 0;
+    if (isActive && isRoot && status === "pending") lines.push("Starting…");
+    else if (isActive) lines.push("In progress…");
     else if (status === "pending") lines.push("Waiting to start…");
     else if (status === "completed") lines.push("Completed");
     else if (status === "error") lines.push("Failed");
@@ -690,8 +714,10 @@ export function derivePhaseInfo(state: GraphState): PhaseInfo {
     currentPhase: PHASE_LABELS[currentId] ?? currentId,
     currentIcon: NODE_ICONS[currentId] ?? "",
     progress,
-    // phaseIndex tracks completedCount + 1 so it never diverges from progress bar
-    phaseIndex: Math.min(completedCount + 1, totalCount),
+    // phaseIndex tracks completedCount so the Phase indicator (left) and the
+    // progress badge (right) always show the same fraction.
+    // Floor at 1 to avoid "Phase 0 of 12" when extraction just started.
+    phaseIndex: Math.min(Math.max(completedCount, 1), totalCount),
     totalPhases: totalCount,
     activeNodeIds,
     completedCount,

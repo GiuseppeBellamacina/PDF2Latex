@@ -7,6 +7,8 @@ Centralises every LLM interaction so robustness lives in one place:
 * automatic retry with exponential backoff + jitter on transient errors
   (rate limits, timeouts, 5xx);
 * a concurrency gate (semaphore) so fan-out cannot overwhelm a provider;
+* a global RPM (requests per minute) sliding-window gate that pauses callers
+  when the per-minute budget is exhausted (configurable, default 30 rpm);
 * structured-output helpers that validate against Pydantic schemas, with a
   lenient JSON fallback for providers that cannot honour a schema;
 * lightweight token/cost accounting for logging and debugging.
@@ -20,6 +22,7 @@ import json
 import random
 import re
 import threading
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, TypeVar
@@ -34,6 +37,109 @@ from app.core.logging import get_logger
 logger = get_logger("llm")
 
 T = TypeVar("T", bound=BaseModel)
+
+
+# --------------------------------------------------------------------------- #
+# RPM (requests-per-minute) gate — sliding-window scheduler                    #
+# --------------------------------------------------------------------------- #
+class _RPMLimiter:
+    """A sliding-window global RPM gate.
+
+    Before every LLM call the scheduler checks whether the per-minute budget has
+    been exhausted in the preceding 60-second window.  When it has, the caller
+    sleeps until the oldest recorded request ages out of the window.  Calls that
+    are already in-progress are NOT counted — only dispatch timestamps matter.
+
+    The limiter is active when ``settings.llm_rpm_enabled`` is True AND the
+    effective ``rpm_limit`` (global default or per-call override) is positive.
+    """
+
+    def __init__(self) -> None:
+        self._timestamps: list[float] = []
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, label: str = "llm", rpm_limit: int | None = None) -> None:
+        """Block until a request slot is available in the RPM window.
+
+        When ``rpm_limit`` is provided it overrides the global default; when it
+        is 0 or negative (or the global ``llm_rpm_enabled`` is False) this is a
+        no-op.
+        """
+        effective_rpm = rpm_limit
+        if effective_rpm is None:
+            effective_rpm = settings.llm_rpm_limit if settings.llm_rpm_enabled else 0
+        if not settings.llm_rpm_enabled or effective_rpm <= 0:
+            return
+
+        # Check the window and compute how long we need to wait (if at all)
+        # WITHOUT holding the lock during the sleep, so other coroutines can
+        # observe the state while one is waiting.
+        wait_for = 0.0
+        budget_count = 0
+        async with self._lock:
+            now = time.monotonic()
+            window_start = now - 60.0
+            self._timestamps = [t for t in self._timestamps if t > window_start]
+            budget_count = len(self._timestamps)
+            if budget_count >= effective_rpm:
+                oldest = self._timestamps[0]
+                wait_for = max(0.0, oldest - window_start)
+
+        if wait_for > 0:
+            logger.info(
+                "RPM gate: %d/%d richieste in finestra, pausa %.1fs per '%s'",
+                budget_count,
+                effective_rpm,
+                wait_for,
+                label,
+            )
+            await asyncio.sleep(wait_for)
+            # Re-acquire the lock after sleep and re-check the window.
+            # Another coroutine may have added a timestamp while we slept.
+            async with self._lock:
+                now = time.monotonic()
+                window_start = now - 60.0
+                self._timestamps = [t for t in self._timestamps if t > window_start]
+                while len(self._timestamps) >= effective_rpm:
+                    oldest = self._timestamps[0]
+                    extra_wait = max(0.0, oldest - window_start)
+                    if extra_wait <= 0:
+                        break
+                    # Release the lock before sleeping; re-check after.
+                    self._lock.release()
+                    try:
+                        await asyncio.sleep(extra_wait)
+                    finally:
+                        await self._lock.acquire()
+                    now = time.monotonic()
+                    window_start = now - 60.0
+                    self._timestamps = [t for t in self._timestamps if t > window_start]
+                self._timestamps.append(now)
+            return
+
+        async with self._lock:
+            self._timestamps.append(now)
+
+
+_RPM_LIMITER: _RPMLimiter | None = None
+
+
+def _get_rpm_limiter() -> _RPMLimiter:
+    global _RPM_LIMITER
+    if _RPM_LIMITER is None:
+        _RPM_LIMITER = _RPMLimiter()
+    return _RPM_LIMITER
+
+
+async def acquire_rpm_slot(label: str = "llm", rpm_limit: int | None = None) -> None:
+    """Public hook: wait until the global RPM gate allows one more request.
+
+    This is the stable cross-module API.  Call it before every LLM invocation.
+    When ``llm_rpm_enabled`` is False or the effective limit is ≤ 0, it returns
+    immediately.
+    """
+    await _get_rpm_limiter().acquire(label, rpm_limit)
+
 
 # Global gate so the total number of concurrent LLM calls stays bounded even
 # across multiple fan-out stages.
@@ -145,39 +251,56 @@ def _is_transient(exc: Exception) -> bool:
     return any(h in msg for h in _TRANSIENT_HINTS)
 
 
-async def _ainvoke_with_retry(model: Any, messages: list, label: str) -> Any:
+async def _ainvoke_with_retry(
+    model: Any,
+    messages: list,
+    label: str,
+    rpm_limit: int | None = None,
+    fallback_model: Any = None,
+    fallback_rpm_limit: int | None = None,
+) -> Any:
     """Invoke a model with bounded retries + exponential backoff and jitter.
 
     Each call is bounded by ``llm_request_timeout`` so a hung provider cannot
     stall the whole run: a timeout is treated as a transient error and retried.
+
+    When ``fallback_model`` is provided and primary retries are exhausted on a
+    *transient* error, the call is retried on the fallback model with a fresh
+    set of retries before giving up entirely.
     """
     attempts = max(1, settings.llm_max_retries)
     timeout = settings.llm_request_timeout if settings.llm_request_timeout > 0 else None
+
+    async def _invoke_one(m: Any, rpm: int | None = rpm_limit) -> Any:
+        async with _get_semaphore():
+            await _get_rpm_limiter().acquire(label, rpm)
+            if timeout is None:
+                return await m.ainvoke(messages)
+            return await asyncio.wait_for(m.ainvoke(messages), timeout=timeout)
+
     last_exc: Exception | None = None
+    # ── Primary model ──────────────────────────────────────────────────────
     for attempt in range(1, attempts + 1):
         try:
-            async with _get_semaphore():
-                if timeout is None:
-                    return await model.ainvoke(messages)
-                return await asyncio.wait_for(model.ainvoke(messages), timeout=timeout)
+            return await _invoke_one(model)
         except (Exception, asyncio.TimeoutError) as exc:  # noqa: BLE001
             last_exc = exc
             timed_out = isinstance(exc, asyncio.TimeoutError)
             transient = timed_out or _is_transient(exc)
             if timed_out:
-                exc = TimeoutError(  # nicer message than bare TimeoutError
-                    f"richiesta LLM oltre il timeout di {timeout}s"
-                )
-                last_exc = exc
+                last_exc = TimeoutError(f"richiesta LLM oltre il timeout di {timeout}s")
             if attempt >= attempts or not transient:
-                logger.error(
-                    "LLM '%s' fallito al tentativo %d/%d: %s",
-                    label,
-                    attempt,
-                    attempts,
-                    exc,
-                )
-                raise
+                if not transient or fallback_model is None:
+                    logger.error(
+                        "LLM '%s' fallito al tentativo %d/%d: %s",
+                        label,
+                        attempt,
+                        attempts,
+                        exc,
+                    )
+                    raise
+                # Switch to fallback below.
+                break
             delay = settings.llm_retry_base_delay * (2 ** (attempt - 1))
             delay += random.uniform(0, delay * 0.25)  # jitter
             logger.warning(
@@ -189,8 +312,57 @@ async def _ainvoke_with_retry(model: Any, messages: list, label: str) -> Any:
                 exc,
             )
             await asyncio.sleep(delay)
+
+    # ── Fallback model ─────────────────────────────────────────────────────
+    if fallback_model is None:
+        assert last_exc is not None
+        raise last_exc
+
+    logger.warning("LLM '%s': provider primario esaurito, passaggio al fallback", label)
+    for attempt in range(1, attempts + 1):
+        try:
+            return await _invoke_one(fallback_model, fallback_rpm_limit)
+        except (Exception, asyncio.TimeoutError) as exc:  # noqa: BLE001
+            last_exc = exc
+            timed_out = isinstance(exc, asyncio.TimeoutError)
+            transient = timed_out or _is_transient(exc)
+            if attempt >= attempts or not transient:
+                logger.error(
+                    "LLM '%s' fallback fallito al tentativo %d/%d: %s",
+                    label,
+                    attempt,
+                    attempts,
+                    exc,
+                )
+                raise
+            delay = settings.llm_retry_base_delay * (2 ** (attempt - 1))
+            delay += random.uniform(0, delay * 0.25)
+            logger.warning(
+                "LLM '%s' fallback errore (tentativo %d/%d), retry tra %.1fs: %s",
+                label,
+                attempt,
+                attempts,
+                delay,
+                exc,
+            )
+            await asyncio.sleep(delay)
     assert last_exc is not None
     raise last_exc
+
+
+def _build_fallback_model(
+    llm_config: dict[str, Any], temperature: float | None
+) -> tuple[Any, int | None]:
+    """Build a fallback model and its RPM limit from ``fallback_llm_config``.
+
+    Returns ``(model, rpm_limit)`` — both are ``None`` when no fallback is
+    configured.
+    """
+    fallback_cfg_dict = llm_config.get("fallback_llm_config")
+    if not fallback_cfg_dict:
+        return None, None
+    fallback_cfg = LLMConfig(**fallback_cfg_dict)
+    return _get_model(fallback_cfg, temperature), fallback_cfg_dict.get("rpm_limit")
 
 
 async def call_llm(
@@ -203,8 +375,16 @@ async def call_llm(
     """Invoke the configured LLM with a system + user message, return text."""
     cfg = LLMConfig(**llm_config)
     model = _get_model(cfg, temperature)
+    fallback_model, fallback_rpm = _build_fallback_model(llm_config, temperature)
     messages = [SystemMessage(content=system), HumanMessage(content=user)]
-    result = await _ainvoke_with_retry(model, messages, label)
+    result = await _ainvoke_with_retry(
+        model,
+        messages,
+        label,
+        rpm_limit=llm_config.get("rpm_limit"),
+        fallback_model=fallback_model,
+        fallback_rpm_limit=fallback_rpm,
+    )
     _record_usage(result)
     return str(getattr(result, "content", result))
 
@@ -226,13 +406,21 @@ async def call_llm_structured(
     """
     cfg = LLMConfig(**llm_config)
     model = _get_model(cfg, temperature)
+    fallback_model, fallback_rpm = _build_fallback_model(llm_config, temperature)
     messages = [SystemMessage(content=system), HumanMessage(content=user)]
 
     # Native structured output (skip for the offline fake model).
     if cfg.provider != "fake":
         try:
             structured = model.with_structured_output(schema)
-            result = await _ainvoke_with_retry(structured, messages, label)
+            result = await _ainvoke_with_retry(
+                structured,
+                messages,
+                label,
+                rpm_limit=llm_config.get("rpm_limit"),
+                fallback_model=fallback_model,
+                fallback_rpm_limit=fallback_rpm,
+            )
             if isinstance(result, schema):
                 return result
             if isinstance(result, dict):
@@ -294,10 +482,18 @@ async def call_vision_structured(
         return None
 
     model = _get_model(cfg, temperature)
+    fallback_model, fallback_rpm = _build_fallback_model(llm_config, temperature)
     messages = [SystemMessage(content=system), HumanMessage(content=content)]
     try:
         structured = model.with_structured_output(schema)
-        result = await _ainvoke_with_retry(structured, messages, label)
+        result = await _ainvoke_with_retry(
+            structured,
+            messages,
+            label,
+            rpm_limit=llm_config.get("rpm_limit"),
+            fallback_model=fallback_model,
+            fallback_rpm_limit=fallback_rpm,
+        )
         if isinstance(result, schema):
             return result
         if isinstance(result, dict):
@@ -308,7 +504,14 @@ async def call_vision_structured(
 
     # Some providers return text even with structured output; parse leniently.
     try:
-        raw_result = await _ainvoke_with_retry(model, messages, label)
+        raw_result = await _ainvoke_with_retry(
+            model,
+            messages,
+            label,
+            rpm_limit=llm_config.get("rpm_limit"),
+            fallback_model=fallback_model,
+            fallback_rpm_limit=fallback_rpm,
+        )
         _record_usage(raw_result)
         data = parse_json_response(str(getattr(raw_result, "content", raw_result)))
         if isinstance(data, dict):

@@ -116,6 +116,9 @@ class Project(Base):
     # using the web tools configured in ``web_tool_ids``. Works alongside
     # uploaded PDFs (research supplements the extracted content).
     research_mode = Column(Boolean, default=False)
+    # When True, ONLY use web research — skip PDF extraction entirely even
+    # if sources are present.  Implies ``research_mode=True``.
+    research_only = Column(Boolean, default=False)
     # List of WebToolConfig IDs to use for web research. Multiple tools
     # are searched in parallel and results are merged &amp; deduplicated.
     web_tool_ids = Column(JSON, nullable=True)
@@ -251,6 +254,12 @@ class ProviderConfig(Base):
     base_url = Column(String(512), nullable=True)
     default_model = Column(String(100), nullable=True)
     params = Column(JSON, nullable=True)  # temperature, max_tokens, top_p, etc.
+    rpm_limit = Column(Integer, nullable=True)  # per-provider RPM override
+    # Optional fallback provider — used when the primary provider exhausts
+    # retries on transient errors (rate limits, timeouts, 5xx).
+    fallback_provider_id = Column(
+        Integer, ForeignKey("provider_configs.id"), nullable=True
+    )
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 

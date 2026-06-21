@@ -5,20 +5,21 @@ LangGraph pipeline, then calls ``run_generation`` with a ``fake`` provider.
 Verifies that extraction branches correctly per source type and that the
 pipeline result (sections, output path) is persisted.
 
-Note: uses the project's file-based SQLite DB (via ``async_session``) with
-cleanup after each test, rather than purely in-memory, because the global
-engine is shared across the application.
+Note: uses the project's file-based SQLite DB (via ``async_session``);
+cleanup is handled automatically by the ``fake_provider_and_project``
+fixture teardown.
 """
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
 from app.db.database import async_session
-from app.db.models import Project, ProjectStatus, ProviderConfig, Source
+from app.db.models import Project, ProjectStatus, Source
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
@@ -88,7 +89,9 @@ FAKE_PIPELINE_RESULT = {
 
 
 @pytest.mark.asyncio
-async def test_run_generation_mixed_sources(tmp_path, monkeypatch):
+async def test_run_generation_mixed_sources(
+    tmp_path, monkeypatch, fake_provider_and_project
+):
     """Run ``run_generation`` with PDF + text + image + URL sources.
 
     Uses a ``fake`` provider (no API calls) and mocks ``run_pipeline`` to
@@ -98,6 +101,8 @@ async def test_run_generation_mixed_sources(tmp_path, monkeypatch):
     * Sections are persisted.
     * The project's ``output_tex_path`` is set.
     """
+    provider_id, project_id = fake_provider_and_project
+
     # ── 1. Create real source files ────────────────────────────────────
     files_dir = tmp_path / "uploads"
     files_dir.mkdir()
@@ -130,50 +135,36 @@ async def test_run_generation_mixed_sources(tmp_path, monkeypatch):
     img_path = files_dir / "diagram.png"
     _create_image(img_path, "Architecture Diagram")
 
-    # ── 2. Set up database records ─────────────────────────────────────
+    # ── 2. Add sources and update project ──────────────────────────────
     async with async_session() as session:
-        provider = ProviderConfig(
-            name="test-e2e-fake",
-            provider_type="fake",
-            default_model="fake-echo",
-            is_active=True,
-        )
-        session.add(provider)
-        await session.flush()
-
-        project = Project(
-            name="Test Mixed Sources",
-            language="english",
-            status=ProjectStatus.uploaded,
-            total_sources=4,
-        )
-        session.add(project)
-        await session.flush()
+        project = await session.get(Project, project_id)
+        assert project is not None
+        project.total_sources = 4
 
         sources = [
             Source(
-                project_id=project.id,
+                project_id=project_id,
                 filename="paper.pdf",
                 path=str(pdf_path),
                 order_index=0,
                 source_type="pdf",
             ),
             Source(
-                project_id=project.id,
+                project_id=project_id,
                 filename="notes.md",
                 path=str(text_path),
                 order_index=1,
                 source_type="text",
             ),
             Source(
-                project_id=project.id,
+                project_id=project_id,
                 filename="diagram.png",
                 path=str(img_path),
                 order_index=2,
                 source_type="image",
             ),
             Source(
-                project_id=project.id,
+                project_id=project_id,
                 filename="example_com_page",
                 path="https://example.com/article",
                 order_index=3,
@@ -183,9 +174,6 @@ async def test_run_generation_mixed_sources(tmp_path, monkeypatch):
         for src in sources:
             session.add(src)
         await session.commit()
-
-        project_id = project.id
-        provider_id = provider.id
 
         # Ensure the figures directory exists (runner copies image sources
         # into ``figures_dir`` which is ``uploads/project_N/figures``).
@@ -325,12 +313,172 @@ async def test_run_generation_mixed_sources(tmp_path, monkeypatch):
     assert required_keys == set(url_doc.keys())
     assert "Transformer architectures" in url_doc["full_text"]
 
-    # ── 7. Clean up database records ──────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Research + extraction parallelism
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_research_extraction_parallel_events(
+    tmp_path, monkeypatch, fake_provider_and_project
+):
+    """Research and extraction progress events are interleaved.
+
+    When ``research_mode`` is enabled alongside a PDF source, the research
+    task is kicked off BEFORE the extraction loop, so research events arrive
+    before extraction starts.  After extraction completes, the research task
+    is awaited and its results are emitted.  This test captures the full
+    sequence of ``manager.emit`` calls and verifies the interleaved order.
+    """
+    provider_id, project_id = fake_provider_and_project
+
+    # ── 1. Create a real PDF source ────────────────────────────────────
+    files_dir = tmp_path / "uploads"
+    files_dir.mkdir()
+
+    pdf_path = files_dir / "quantum.pdf"
+    _create_pdf(
+        pdf_path,
+        [
+            "Quantum Computing: Principles and Applications",
+            "Quantum computers leverage superposition and entanglement",
+            "to solve problems intractable for classical machines.",
+            "Key algorithms include Shor's factoring and Grover's search.",
+        ],
+    )
+
+    # ── 2. Add source and enable research_mode on the project ──────────
     async with async_session() as session:
         project = await session.get(Project, project_id)
-        if project:
-            await session.delete(project)
-        provider = await session.get(ProviderConfig, provider_id)
-        if provider:
-            await session.delete(provider)
+        assert project is not None
+        project.user_prompt = "Quantum computing fundamentals"
+        project.research_mode = True
+        project.web_agent_max_iterations = 2
+        project.total_sources = 1
+
+        src = Source(
+            project_id=project_id,
+            filename="quantum.pdf",
+            path=str(pdf_path),
+            order_index=0,
+            source_type="pdf",
+        )
+        session.add(src)
         await session.commit()
+
+        figures_dir = tmp_path / "uploads" / f"project_{project_id}" / "figures"
+        figures_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── 3. Capture all progress events in order ────────────────────────
+    captured_events: list[dict] = []
+
+    async def _capture_emit(pid, event):
+        captured_events.append(dict(event))
+
+    monkeypatch.setattr(
+        "app.services.runner.manager.emit",
+        _capture_emit,
+    )
+
+    # ── 4. Mock research_topic — returns synthetic results ─────────────
+    async def _fake_research(*args, **kwargs):
+        # Yield control so extraction can interleave while research runs.
+        await asyncio.sleep(0.05)
+        return (
+            [{"filename": "web", "summary": "Quantum topics", "topics": ["Qubits"]}],
+            [
+                {
+                    "title": "Quantum Computing",
+                    "url": "https://en.wikipedia.org/wiki/Quantum_computing",
+                    "source": "wikipedia",
+                }
+            ],
+        )
+
+    monkeypatch.setattr(
+        "app.agents.researcher.research_topic",
+        _fake_research,
+    )
+
+    # ── 5. Mock run_pipeline — capture its args ────────────────────────
+    pipeline_kwargs: dict = {}
+
+    async def _fake_pipeline(**kwargs):
+        nonlocal pipeline_kwargs
+        pipeline_kwargs = kwargs
+        return dict(FAKE_PIPELINE_RESULT)
+
+    monkeypatch.setattr(
+        "app.services.runner.run_pipeline",
+        _fake_pipeline,
+    )
+
+    # ── 6. Point storage at tmp_path and disable OCR ───────────────────
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "uploads_dir", tmp_path / "uploads")
+    monkeypatch.setattr(settings, "output_dir", tmp_path / "output")
+    monkeypatch.setattr("app.services.runner._pytesseract_available", lambda: False)
+
+    # ── 7. Run generation ─────────────────────────────────────────────
+    from app.services.runner import run_generation
+
+    await run_generation(
+        project_id=project_id,
+        provider_id=provider_id,
+        model="fake-echo",
+    )
+
+    # ── 8. Verify event interleaving ───────────────────────────────────
+    messages = [e.get("message", "") for e in captured_events]
+    nodes = [e.get("node", "") for e in captured_events]
+
+    # (a) Research kick-off MUST appear before extraction start.
+    research_idx = next(i for i, m in enumerate(messages) if "Ricerca web" in m)
+    extract_idx = next(i for i, m in enumerate(messages) if "Estrazione sorgenti" in m)
+    assert research_idx < extract_idx, (
+        f"Research kick-off (idx={research_idx}) should precede "
+        f"extraction start (idx={extract_idx})"
+    )
+
+    # (b) Extraction per-source events happen.
+    source_events = [m for m in messages if "quantum.pdf" in m and "PDF" in m]
+    assert len(source_events) >= 1, "Expected at least one per-source event"
+
+    # (c) "Attendo completamento ricerca web" comes AFTER extraction.
+    await_idx = next(i for i, m in enumerate(messages) if "Attendo completamento" in m)
+    last_source_idx = max(i for i, m in enumerate(messages) if "quantum.pdf" in m)
+    assert await_idx > last_source_idx, "Await research should come after extraction"
+
+    # (d) Research results come after the await.
+    results_events = [
+        e for e in captured_events if e.get("action") == "research_results"
+    ]
+    assert len(results_events) == 1, (
+        f"Expected 1 research_results event, got {len(results_events)}"
+    )
+    results_idx = captured_events.index(results_events[0])
+    assert results_idx > await_idx, "Research results after await"
+
+    # (e) Both research and extract node events present (interleaved).
+    research_nodes = [n for n in nodes if n == "research"]
+    extract_nodes = [n for n in nodes if n == "extract"]
+    assert len(research_nodes) == 2, (
+        f"Expected 2 research events (kick-off + results), got {len(research_nodes)}"
+    )
+    assert len(extract_nodes) >= 3, (
+        f"Expected ≥3 extract events (start + per-source + completion), got {len(extract_nodes)}"
+    )
+
+    # ── 9. Verify research results passed to pipeline ──────────────────
+    assert pipeline_kwargs.get("web_analyses") is not None, (
+        "web_analyses should be passed to run_pipeline"
+    )
+    assert pipeline_kwargs.get("research_mode") is False, (
+        "research_mode should be False when research was pre-computed"
+    )
+    assert len(pipeline_kwargs.get("web_analyses", [])) == 1
+    assert len(pipeline_kwargs.get("documents", [])) == 1, (
+        "1 document expected (the PDF)"
+    )

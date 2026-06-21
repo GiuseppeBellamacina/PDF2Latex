@@ -7,6 +7,8 @@ export interface Provider {
   base_url: string | null;
   default_model: string | null;
   params: Record<string, unknown> | null;
+  rpm_limit: number | null;
+  fallback_provider_id: number | null;
   is_active: boolean;
   has_api_key: boolean;
 }
@@ -18,6 +20,8 @@ export interface ProviderInput {
   base_url?: string | null;
   default_model?: string | null;
   params?: Record<string, unknown> | null;
+  rpm_limit?: number | null;
+  fallback_provider_id?: number | null;
   is_active?: boolean;
 }
 
@@ -73,6 +77,7 @@ export interface Project {
   latex_template: string | null;
   writer_use_knowledge: boolean | null;
   research_mode: boolean | null;
+  research_only: boolean | null;
   web_tool_ids: number[] | null;
   research_max_queries: number | null;
   web_agent_max_iterations: number | null;
@@ -108,6 +113,7 @@ export interface ProjectUpdate {
   latex_template?: string | null;
   writer_use_knowledge?: boolean;
   research_mode?: boolean;
+  research_only?: boolean;
   web_tool_ids?: number[] | null;
   research_max_queries?: number | null;
   web_agent_max_iterations?: number | null;

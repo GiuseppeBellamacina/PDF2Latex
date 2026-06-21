@@ -50,6 +50,7 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "web_agent_max_iterations": "INTEGER DEFAULT 3",
         "web_agent_provider_id": "INTEGER REFERENCES provider_configs(id)",
         "web_agent_model": "VARCHAR(100)",
+        "research_only": "BOOLEAN DEFAULT 0",
     },
     "figures": {
         "caption": "TEXT",
@@ -66,6 +67,10 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
     "sections": {
         "source_filenames": "JSON",
         "previous_latex": "TEXT",
+    },
+    "provider_configs": {
+        "rpm_limit": "INTEGER",
+        "fallback_provider_id": "INTEGER REFERENCES provider_configs(id)",
     },
 }
 

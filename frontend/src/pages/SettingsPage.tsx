@@ -120,6 +120,8 @@ const EMPTY: ProviderInput = {
   api_key: "",
   base_url: "",
   default_model: "",
+  rpm_limit: null,
+  fallback_provider_id: null,
   is_active: true,
 };
 
@@ -221,6 +223,8 @@ export default function SettingsPage() {
       api_key: "",
       base_url: p.base_url ?? "",
       default_model: p.default_model ?? "",
+      rpm_limit: p.rpm_limit,
+      fallback_provider_id: p.fallback_provider_id,
       is_active: p.is_active,
     });
   }
@@ -506,6 +510,44 @@ export default function SettingsPage() {
               />
             </div>
           )}
+          <div>
+            <label className="mb-1 flex items-center gap-1 text-xs font-medium text-ink-500">
+              <Clock size={12} className="text-ink-400" />
+              RPM limit
+              <span className="font-normal text-ink-400">
+                (requests/min, empty = global default)
+              </span>
+            </label>
+            <input
+              type="number"
+              className="input"
+              min={0}
+              value={form.rpm_limit ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                setForm({
+                  ...form,
+                  rpm_limit: v === "" ? null : Math.max(0, Number(v)),
+                });
+              }}
+              placeholder="use global default"
+            />
+          </div>
+          <div>
+            <label className="mb-1 flex items-center gap-1 text-xs font-medium text-ink-500">
+              <RefreshCw size={12} className="text-ink-400" />
+              Fallback provider
+              <span className="font-normal text-ink-400">
+                (optional, used if primary fails)
+              </span>
+            </label>
+            <FallbackProviderSelect
+              providers={providers}
+              excludeId={null}
+              value={form.fallback_provider_id}
+              onChange={(id) => setForm({ ...form, fallback_provider_id: id })}
+            />
+          </div>
         </div>
 
         {testResult && <TestResultCard result={testResult} />}
@@ -608,6 +650,46 @@ export default function SettingsPage() {
                       }
                     />
                   </div>
+                  <div>
+                    <label className="mb-1 flex items-center gap-1 text-xs font-medium text-ink-500">
+                      <Clock size={12} className="text-ink-400" />
+                      RPM limit
+                      <span className="font-normal text-ink-400">
+                        (empty = global default)
+                      </span>
+                    </label>
+                    <input
+                      type="number"
+                      className="input text-sm"
+                      min={0}
+                      value={editForm.rpm_limit ?? ""}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setEditForm({
+                          ...editForm,
+                          rpm_limit: v === "" ? null : Math.max(0, Number(v)),
+                        });
+                      }}
+                      placeholder="use global default"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 flex items-center gap-1 text-xs font-medium text-ink-500">
+                      <RefreshCw size={12} className="text-ink-400" />
+                      Fallback provider
+                      <span className="font-normal text-ink-400">
+                        (optional)
+                      </span>
+                    </label>
+                    <FallbackProviderSelect
+                      providers={providers}
+                      excludeId={editingId}
+                      value={editForm.fallback_provider_id}
+                      onChange={(id) =>
+                        setEditForm({ ...editForm, fallback_provider_id: id })
+                      }
+                    />
+                  </div>
                 </div>
                 <div className="mt-3 flex gap-2">
                   <button
@@ -661,6 +743,11 @@ export default function SettingsPage() {
                 <p className="text-xs text-ink-500">
                   <span className="capitalize">{p.provider_type}</span>
                   {p.default_model && ` · ${p.default_model}`}
+                  {p.fallback_provider_id != null && providers.find((x) => x.id === p.fallback_provider_id) != null && (
+                    <span className="ml-1" title={`Fallback: ${providers.find((x) => x.id === p.fallback_provider_id)!.name}`}>
+                      {' · fallback: ' + providers.find((x) => x.id === p.fallback_provider_id)!.name}
+                    </span>
+                  )}
                   {p.base_url && ` · ${p.base_url}`}
                   {p.has_api_key && (
                     <span className="ml-1" title="API key set">
@@ -905,6 +992,39 @@ function ProviderTypeSelect({
         </div>
       )}
     </div>
+  );
+}
+
+function FallbackProviderSelect({
+  providers,
+  excludeId,
+  value,
+  onChange,
+}: {
+  providers: Provider[];
+  excludeId: number | null;
+  value: number | null | undefined;
+  onChange: (id: number | null) => void;
+}) {
+  const filtered = providers.filter(
+    (p) => p.is_active && p.id !== excludeId,
+  );
+  return (
+    <select
+      className="input text-sm"
+      value={value ?? ""}
+      onChange={(e) => {
+        const v = e.target.value;
+        onChange(v ? Number(v) : null);
+      }}
+    >
+      <option value="">None</option>
+      {filtered.map((p) => (
+        <option key={p.id} value={p.id}>
+          {p.name} ({p.provider_type})
+        </option>
+      ))}
+    </select>
   );
 }
 

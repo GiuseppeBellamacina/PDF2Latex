@@ -1,6 +1,8 @@
 services:
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     environment:
       PDF2TEX_ENCRYPTION_KEY: ${PDF2TEX_ENCRYPTION_KEY:-change-me-please}
       PDF2TEX_PDFLATEX_BIN: pdflatex

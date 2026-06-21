@@ -76,7 +76,6 @@ class GraphState(TypedDict, total=False):
     title: str
     plan: Required[list[PlannedSection]]
     sections: Required[list[WrittenSection]]
-    review_notes: list[str]
     overview_latex: str  # optional per-chapter synopsis block (TOC-like)
     # Bibliography: ``references_pool`` is every reference extracted from the
     # sources (with citation keys); ``bibliography_bib`` is the BibTeX database
@@ -117,7 +116,3 @@ class GraphState(TypedDict, total=False):
 
     # Progress callback (not serialized, passed through)
     progress: ProgressCb
-
-    # Web research analytics (for the frontend graph visualization)
-    research_queries: list[str]  # generated search queries
-    research_results_count: int  # total results found

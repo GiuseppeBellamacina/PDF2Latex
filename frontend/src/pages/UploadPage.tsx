@@ -42,6 +42,7 @@ export default function UploadPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [researchMode, setResearchMode] = useState(false);
+  const [researchOnly, setResearchOnly] = useState(false);
   const [webToolIds, setWebToolIds] = useState<Set<number>>(new Set());
   const [maxQueries, setMaxQueries] = useState<number>(0);
   const [quickAdding, setQuickAdding] = useState<string | null>(null);
@@ -87,7 +88,7 @@ export default function UploadPage() {
 
   const totalSources = files.length + urlList.length;
   const activeWebTools = webTools.filter((t) => t.is_active);
-  const canSubmit = (totalSources > 0 || researchMode) && name.trim();
+  const canSubmit = (totalSources > 0 || researchMode || researchOnly) && name.trim();
 
   async function handleSubmit() {
     if (!canSubmit) return;
@@ -99,7 +100,8 @@ export default function UploadPage() {
       form.append("language", language);
       form.append("ocr_lang", "");
       form.append("extractor_backend", "pipeline");
-      form.append("research_mode", String(researchMode));
+      form.append("research_mode", String(researchMode || researchOnly));
+      form.append("research_only", String(researchOnly));
       form.append("web_tool_ids", [...webToolIds].join(","));
       form.append("research_max_queries", String(maxQueries));
       form.append("urls", urlList.join("\n"));
@@ -140,6 +142,49 @@ export default function UploadPage() {
             </p>
           )}
         </div>
+
+        {/* ── Research-only checkbox ────────────────────────────────── */}
+        {!researchMode && (
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => setResearchOnly(!researchOnly)}
+            onKeyDown={(e) => { if (e.key === " ") e.preventDefault(); }}
+            className={cn(
+              "cursor-pointer rounded-xl border-2 p-5 transition-all duration-300",
+              "hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40",
+              researchOnly
+                ? "border-violet-400 bg-violet-50/40 shadow-sm dark:border-violet-600 dark:bg-violet-950/20"
+                : "border-ink-200/60 bg-ink-50/50 hover:border-ink-400 dark:border-ink-800/60 dark:bg-ink-950/50 dark:hover:border-ink-600",
+            )}
+          >
+            <div className="flex items-start gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-ink-100 text-ink-400 dark:bg-ink-800 dark:text-ink-500">
+                <Globe size={22} strokeWidth={1.5} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <span onClick={(e) => e.stopPropagation()}>
+                  <Checkbox
+                    checked={researchOnly}
+                    onChange={(checked) => setResearchOnly(checked)}
+                    label={
+                      <span className="flex items-center gap-1.5">
+                        Research only
+                        {researchOnly && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                            <Globe size={10} />
+                            Active
+                          </span>
+                        )}
+                      </span>
+                    }
+                    hint="Generate purely from web research — skip PDF extraction even if files are uploaded."
+                  />
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Research mode toggle ──────────────────────────────────────── */}
         <div
@@ -476,7 +521,9 @@ export default function UploadPage() {
                 : `Continue (${totalSources} source${totalSources !== 1 ? "s" : ""})`
               : researchMode
                 ? "Start research"
-                : "Add sources or enable research mode"}
+                : researchOnly
+                  ? "Start research"
+                  : "Add sources or enable research mode"}
           <ArrowRight size={16} />
         </button>
       </div>

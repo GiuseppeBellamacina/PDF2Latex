@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 # ── Load .env.test BEFORE any app imports ─────────────────────────────────
-# This ensures test env vars populate os.environ before pydantic-settings
-# reads them in config.py.  Existing env vars are NOT overwritten (override=False
-# is the default), so CI and local overrides still work.
+# This populates os.environ with test credentials (PDF2TEX_TEST_*) so that
+# real-LLM and real-web-tool fixtures pick them up.  Existing env vars are
+# NOT overwritten, so CI and local overrides still take priority.
 import os
 import time
 from datetime import datetime, timezone
@@ -16,13 +16,6 @@ from dotenv import load_dotenv
 _env_test = Path(__file__).resolve().parent.parent / ".env.test"
 if _env_test.exists():
     load_dotenv(_env_test, override=False)
-else:
-    import sys
-
-    print(
-        "[conftest] .env.test not found — using app defaults or real .env",
-        file=sys.stderr,
-    )
 
 import json  # noqa: E402
 
@@ -296,12 +289,12 @@ def real_llm_config() -> dict:
     provider = os.environ.get("PDF2TEX_TEST_PROVIDER", "openai")
     model = os.environ.get("PDF2TEX_TEST_MODEL", "gpt-4o-mini")
     api_key = os.environ.get("PDF2TEX_TEST_API_KEY", "")
-    api_base = os.environ.get("PDF2TEX_TEST_API_BASE", "")
+    base_url = os.environ.get("PDF2TEX_TEST_API_BASE", "")
     config: dict = {"provider": provider, "model": model}
     if api_key:
         config["api_key"] = api_key
-    if api_base:
-        config["api_base"] = api_base
+    if base_url:
+        config["base_url"] = base_url
     return config
 
 
@@ -526,3 +519,58 @@ def documents_no_apprendono() -> dict[str, str]:
 @pytest.fixture
 def fake_llm_config() -> dict:
     return {"provider": "fake", "model": "test"}
+
+
+# ── DB-backed test fixtures ───────────────────────────────────────────────
+
+
+@pytest_asyncio.fixture
+async def fake_provider_and_project():
+    """Create UUID-suffixed ProviderConfig + Project in the test DB.
+
+    Yields ``(provider_id, project_id)``.  Records are automatically deleted
+    after the test completes (teardown is defensive — skips if already removed).
+
+    The project has ``status=uploaded`` and total_sources=0.  Use your own
+    ``async_session()`` block to add Sources or tweak project fields.
+    """
+    import uuid
+
+    from app.db.database import async_session
+    from app.db.models import Project, ProjectStatus, ProviderConfig
+
+    uid = uuid.uuid4().hex[:8]
+
+    async with async_session() as session:
+        provider = ProviderConfig(
+            name=f"test-fixture-{uid}",
+            provider_type="fake",
+            default_model="fake-echo",
+            is_active=True,
+        )
+        session.add(provider)
+        await session.flush()
+
+        project = Project(
+            name=f"Test Fixture-{uid}",
+            language="english",
+            status=ProjectStatus.uploaded,
+        )
+        session.add(project)
+        await session.flush()
+        await session.commit()
+
+        _provider_id = provider.id
+        _project_id = project.id
+
+    yield _provider_id, _project_id
+
+    # ── Teardown: delete records (defensive, returns early if absent) ──────
+    async with async_session() as session:
+        p = await session.get(Project, _project_id)
+        if p is not None:
+            await session.delete(p)
+        pr = await session.get(ProviderConfig, _provider_id)
+        if pr is not None:
+            await session.delete(pr)
+        await session.commit()

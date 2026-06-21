@@ -6,6 +6,8 @@ Uses FastAPI's TestClient with an in-memory SQLite database.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -16,9 +18,10 @@ from app.db.models import Project, ProjectStatus
 @pytest.fixture
 async def test_project():
     """Create a project with research_mode=True, web_tool_ids=[1] in the DB."""
+    uid = uuid.uuid4().hex[:8]
     async with async_session() as session:
         project = Project(
-            name="Test PATCH Project",
+            name=f"Test PATCH Project-{uid}",
             language="italian",
             research_mode=True,
             web_tool_ids=[1],

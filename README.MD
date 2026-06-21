@@ -8,8 +8,6 @@ Puoi anche generare documenti **senza PDF** — il sistema ricerca l'argomento s
 web e sintetizza i risultati in un documento strutturato. I due flussi (PDF + web)
 possono lavorare insieme per arricchire il contenuto.
 
-Ispirato al workflow di [EPUB-Translator](https://github.com/GiuseppeBellamacina/EPUB-Translator).
-
 ---
 
 ## Architettura
@@ -115,20 +113,20 @@ La pipeline è implementata con **LangGraph**, un framework per grafi stateful.
 
 ### Nodi del grafo
 
-| Nodo | Ruolo | Parallelismo |
-|------|-------|--------------|
-| **extract** | Estrae testo, figure, riferimenti da ogni PDF (PyMuPDF/Docling/OCR) | Sequenziale (ordine configurabile) |
-| **analyze** | Analizza ogni PDF (riassunto, topics, formule, references) | Fan-out per documento (`asyncio.gather`) |
-| **research** | Ricerca web su un topic (STORM-style: prospettive → query → fetch → sintesi) | Parallelo con analyze |
-| **merge_analyses** | Unisce le analisi da PDF e web in un unico pool per la pianificazione | Singolo (fan-in) |
-| **plan** | Unisce le analisi + prompt utente in una struttura globale con capitoli e sezioni | Singolo |
-| **write** | Scrive il LaTeX di ogni sezione, con contesto accumulato tra sezioni dello stesso capitolo. Inserisce figure utente nelle sezioni target | Fan-out per capitolo, sequenziale dentro ogni capitolo |
-| **overview** | Genera una pagina "Panoramica" con sinossi di ogni capitolo (dopo il TOC) | Parallelo con coherence/citations |
-| **coherence** | Verifica coerenza scientifica tra capitoli (contraddizioni, terminologia) | Parallelo con overview/citations |
-| **citations** | Audita le citazioni: fonti utente citate? chiavi sconosciute? riferimenti mancanti? | Parallelo con overview/coherence |
-| **merge** | Barriera di sincronizzazione: attende overview, coherence e citations | Singolo (fan-in) |
-| **review** | Assembla il documento, applica lint LaTeX deterministico, compila con `pdflatex`, ritenta con LLM se fallisce | Singolo (loop interno di retry) |
-| **judge** | Valuta la struttura del PDF compilato e richiede una revisione strutturale se necessario | Singolo (loop con review) |
+| Nodo               | Ruolo                                                                                                                                    | Parallelismo                                           |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| **extract**        | Estrae testo, figure, riferimenti da ogni PDF (PyMuPDF/Docling/OCR)                                                                      | Sequenziale (ordine configurabile)                     |
+| **analyze**        | Analizza ogni PDF (riassunto, topics, formule, references)                                                                               | Fan-out per documento (`asyncio.gather`)               |
+| **research**       | Ricerca web su un topic (STORM-style: prospettive → query → fetch → sintesi)                                                             | Parallelo con analyze                                  |
+| **merge_analyses** | Unisce le analisi da PDF e web in un unico pool per la pianificazione                                                                    | Singolo (fan-in)                                       |
+| **plan**           | Unisce le analisi + prompt utente in una struttura globale con capitoli e sezioni                                                        | Singolo                                                |
+| **write**          | Scrive il LaTeX di ogni sezione, con contesto accumulato tra sezioni dello stesso capitolo. Inserisce figure utente nelle sezioni target | Fan-out per capitolo, sequenziale dentro ogni capitolo |
+| **overview**       | Genera una pagina "Panoramica" con sinossi di ogni capitolo (dopo il TOC)                                                                | Parallelo con coherence/citations                      |
+| **coherence**      | Verifica coerenza scientifica tra capitoli (contraddizioni, terminologia)                                                                | Parallelo con overview/citations                       |
+| **citations**      | Audita le citazioni: fonti utente citate? chiavi sconosciute? riferimenti mancanti?                                                      | Parallelo con overview/coherence                       |
+| **merge**          | Barriera di sincronizzazione: attende overview, coherence e citations                                                                    | Singolo (fan-in)                                       |
+| **review**         | Assembla il documento, applica lint LaTeX deterministico, compila con `pdflatex`, ritenta con LLM se fallisce                            | Singolo (loop interno di retry)                        |
+| **judge**          | Valuta la struttura del PDF compilato e richiede una revisione strutturale se necessario                                                 | Singolo (loop con review)                              |
 
 ### Routing condizionale
 
@@ -139,6 +137,7 @@ La pipeline è implementata con **LangGraph**, un framework per grafi stateful.
 ### Pattern a diamante (fan-out → fan-in)
 
 #### Diamond delle analisi (PDF + Web)
+
 ```
 extract → analyze ─┐
                     ├──→ merge_analyses → plan
@@ -146,6 +145,7 @@ research (web) ─────┘
 ```
 
 #### Diamond di controllo qualità
+
 ```
 write ──→ overview ──→ merge
 write ──→ coherence ──→ merge
@@ -154,14 +154,14 @@ write ──→ citations ──→ merge
 
 ### Meccanismi di sicurezza
 
-| Meccanismo | Descrizione |
-|------------|-------------|
+| Meccanismo                    | Descrizione                                                                                                         |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | **Lint LaTeX deterministico** | Prima di `pdflatex`, ripara automaticamente ambienti non chiusi, parentesi sbilanciate, comandi residui (`\figref`) |
-| **Retry di compilazione** | Fino a `MAX_REVIEW_RETRIES=2` tentativi con revisione LLM degli errori |
-| **Rollback** | Se una revisione del judge non compila, il grafo torna alla versione precedente (`good_latex`/`good_pdf`) |
-| **Best-effort** | Coherence e citations non bloccano mai la pipeline in caso di errore |
-| **Espansione sezioni** | Le sezioni sotto `writer_expand_threshold` caratteri ricevono un passaggio di espansione automatico |
-| **Fallback figure utente** | Figure caricate senza sezione target corrispondente → aggiunte all'inizio del documento con warning |
+| **Retry di compilazione**     | Fino a `MAX_REVIEW_RETRIES=2` tentativi con revisione LLM degli errori                                              |
+| **Rollback**                  | Se una revisione del judge non compila, il grafo torna alla versione precedente (`good_latex`/`good_pdf`)           |
+| **Best-effort**               | Coherence e citations non bloccano mai la pipeline in caso di errore                                                |
+| **Espansione sezioni**        | Le sezioni sotto `writer_expand_threshold` caratteri ricevono un passaggio di espansione automatico                 |
+| **Fallback figure utente**    | Figure caricate senza sezione target corrispondente → aggiunte all'inizio del documento con warning                 |
 
 ---
 
@@ -180,13 +180,13 @@ Quando l'utente attiva la **Research Mode**, la pipeline può generare documenti
 
 Come i provider LLM, i web tool sono configurabili da UI (**Settings → Web search tools**):
 
-| Tool | API key | Note |
-|------|---------|------|
-| **Wikipedia** | ❌ gratis | API pubblica, nessuna chiave richiesta |
-| **Tavily** | ✅ richiesta | Search API ottimizzata per AI |
-| **Perplexity** | ✅ richiesta | Ricerca con sintesi AI |
-| **Web Agent** | ❌ dipende | Agentic LangGraph: LLM pianifica URL → fetch → valuta |
-| **Custom HTTPX** | ❌ opzionale | Template HTTPX con interpolazione JSON/URL |
+| Tool             | API key      | Note                                                  |
+| ---------------- | ------------ | ----------------------------------------------------- |
+| **Wikipedia**    | ❌ gratis    | API pubblica, nessuna chiave richiesta                |
+| **Tavily**       | ✅ richiesta | Search API ottimizzata per AI                         |
+| **Perplexity**   | ✅ richiesta | Ricerca con sintesi AI                                |
+| **Web Agent**    | ❌ dipende   | Agentic LangGraph: LLM pianifica URL → fetch → valuta |
+| **Custom HTTPX** | ❌ opzionale | Template HTTPX con interpolazione JSON/URL            |
 
 Ogni tool espone `search(query)` e `fetch_page(url)`. Le chiavi API sono salvate **cifrate** (Fernet).
 
@@ -212,14 +212,14 @@ Configurabile da **Configure → Figures → Your images**.
 
 L'estrazione PDF è modellata come una sequenza di **stage indipendenti**, ognuno con tool intercambiabili:
 
-| Stage | Tool disponibili | Default |
-|-------|-----------------|---------|
-| **Testo digitale** | PyMuPDF | `pymupdf` |
-| **Struttura & tabelle** | Docling (IBM) | `docling` |
-| **OCR scansioni** | Tesseract, RapidOCR | `tesseract` |
-| **Matematica** | pix2tex (LaTeX-OCR) | `none` |
-| **Figure** | PyMuPDF | `pymupdf` |
-| **Punteggio figure** | Euristica, Euristica+OCR, Euristica+VLM | `heuristic` |
+| Stage                   | Tool disponibili                        | Default     |
+| ----------------------- | --------------------------------------- | ----------- |
+| **Testo digitale**      | PyMuPDF                                 | `pymupdf`   |
+| **Struttura & tabelle** | Docling (IBM)                           | `docling`   |
+| **OCR scansioni**       | Tesseract, RapidOCR                     | `tesseract` |
+| **Matematica**          | pix2tex (LaTeX-OCR)                     | `none`      |
+| **Figure**              | PyMuPDF                                 | `pymupdf`   |
+| **Punteggio figure**    | Euristica, Euristica+OCR, Euristica+VLM | `heuristic` |
 
 Configurabile da UI nella pagina **Configure** → sezione **Pipeline**. Ogni stage è opzionale (può essere disattivato), e ogni tool riporta se è installato e disponibile.
 
@@ -254,10 +254,10 @@ uv sync --dev
 
 ### Extra disponibili
 
-| Extra | Pacchetto(i) | A cosa serve | Note |
-|-------|-------------|-------------|------|
+| Extra   | Pacchetto(i)                                                                                | A cosa serve                                                           | Note                                         |
+| ------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | -------------------------------------------- |
 | `tools` | `docling`, `pytesseract`, `rapidocr-onnxruntime`, `pix2tex`, `trafilatura`, `tavily-python` | Tutti gli strumenti di estrazione (struttura, OCR, math, web, ricerca) | ⚠️ `pix2tex` compete su `cv2` con `rapidocr` |
-| `dev` | `fastapi-cli`, `ruff>=0.6`, `pytest>=8.0`, `pytest-asyncio>=0.24` | Lint, formattazione, test, dev server | `uv sync --dev` |
+| `dev`   | `fastapi-cli`, `ruff>=0.6`, `pytest>=8.0`, `pytest-asyncio>=0.24`                           | Lint, formattazione, test, dev server                                  | `uv sync --dev`                              |
 
 ### Come installare
 
@@ -337,36 +337,36 @@ brew install tesseract-lang
 Tutte le impostazioni sono in `backend/.env` con prefisso `PDF2TEX_`. Copia
 `backend/.env.example` come punto di partenza. Qui le più utili:
 
-| Variabile | Default | Descrizione |
-|-----------|---------|-------------|
-| `PDF2TEX_ENCRYPTION_KEY` | — | Chiave Fernet per cifrare le API key **(obbligatoria)** |
-| `PDF2TEX_DEBUG` | `false` | Log dettagliati e hot reload |
-| `PDF2TEX_LOG_LEVEL` | `INFO` | DEBUG / INFO / WARNING / ERROR |
-| `PDF2TEX_PDFLATEX_BIN` | `pdflatex` | Percorso dell'eseguibile pdflatex |
-| `PDF2TEX_LATEX_TEMPLATE` | `default` | Template documento: `default` / `paper` / `thesis-oneside` / `thesis-twoside` |
-| `PDF2TEX_LATEX_LINT` | `true` | Lint LaTeX deterministico pre-compilazione |
-| `PDF2TEX_EXTRACTOR_BACKEND` | `hybrid` | Backend estrazione: `hybrid` / `pymupdf` / `docling` |
-| `PDF2TEX_OCR_LANG` | `ita+eng` | Lingue Tesseract (`+` per combinare) |
-| `PDF2TEX_TESSERACT_CMD` | — | Percorso esplicito a `tesseract.exe` |
-| `PDF2TEX_DOCLING_MAX_PAGES` | `200` | Salta Docling oltre questo numero di pagine |
-| `PDF2TEX_LLM_MAX_CONCURRENCY` | `4` | Max chiamate LLM simultanee |
-| `PDF2TEX_LLM_MAX_RETRIES` | `4` | Retry su errori transienti (429/5xx/timeout) |
-| `PDF2TEX_LLM_REQUEST_TIMEOUT` | `180` | Timeout in secondi per chiamata LLM |
-| `PDF2TEX_WRITER_EXPAND_THRESHOLD` | `600` | Soglia caratteri per espansione sezioni sottili |
-| `PDF2TEX_WRITER_USE_KNOWLEDGE` | `false` | Il writer integra con conoscenza interna LLM |
-| `PDF2TEX_COHERENCE_ENABLED` | `true` | Controllo coerenza tra capitoli |
-| `PDF2TEX_CITATIONS_ENABLED` | `true` | Audit citazioni |
-| `PDF2TEX_OVERVIEW_ENABLED` | `true` | Pagina panoramica capitoli |
-| `PDF2TEX_JUDGE_ENABLED` | `true` | Judge strutturale post-compilazione |
-| `PDF2TEX_JUDGE_MAX_ITERATIONS` | `1` | Massimi round di revisione strutturale |
-| `PDF2TEX_JUDGE_VISION` | `false` | Judge visivo (richiede modello multimodale) |
-| `PDF2TEX_JUDGE_VISION_MAX_PAGES` | `12` | Max pagine inviate al judge visivo |
-| `PDF2TEX_MAX_FIGURES_PER_SECTION` | `4` | Cap massimo di figure per sezione |
-| `PDF2TEX_FIGURE_WIDTH_RATIO` | `0.62` | Larghezza `\includegraphics` come frazione di `\linewidth` |
-| `PDF2TEX_RESEARCH_MAX_QUERIES` | `5` | Max query di ricerca web per topic |
-| `PDF2TEX_RESEARCH_FETCH_PAGES` | `true` | Scarica il contenuto completo delle pagine (non solo snippet) |
-| `PDF2TEX_RESEARCH_PAGE_MAX_CHARS` | `8000` | Caratteri massimi per pagina fetchata |
-| `PDF2TEX_RESEARCH_MAX_FETCH_CONCURRENCY` | `4` | Max download simultanei di pagine |
+| Variabile                                | Default    | Descrizione                                                                   |
+| ---------------------------------------- | ---------- | ----------------------------------------------------------------------------- |
+| `PDF2TEX_ENCRYPTION_KEY`                 | —          | Chiave Fernet per cifrare le API key **(obbligatoria)**                       |
+| `PDF2TEX_DEBUG`                          | `false`    | Log dettagliati e hot reload                                                  |
+| `PDF2TEX_LOG_LEVEL`                      | `INFO`     | DEBUG / INFO / WARNING / ERROR                                                |
+| `PDF2TEX_PDFLATEX_BIN`                   | `pdflatex` | Percorso dell'eseguibile pdflatex                                             |
+| `PDF2TEX_LATEX_TEMPLATE`                 | `default`  | Template documento: `default` / `paper` / `thesis-oneside` / `thesis-twoside` |
+| `PDF2TEX_LATEX_LINT`                     | `true`     | Lint LaTeX deterministico pre-compilazione                                    |
+| `PDF2TEX_EXTRACTOR_BACKEND`              | `hybrid`   | Backend estrazione: `hybrid` / `pymupdf` / `docling`                          |
+| `PDF2TEX_OCR_LANG`                       | `ita+eng`  | Lingue Tesseract (`+` per combinare)                                          |
+| `PDF2TEX_TESSERACT_CMD`                  | —          | Percorso esplicito a `tesseract.exe`                                          |
+| `PDF2TEX_DOCLING_MAX_PAGES`              | `200`      | Salta Docling oltre questo numero di pagine                                   |
+| `PDF2TEX_LLM_MAX_CONCURRENCY`            | `4`        | Max chiamate LLM simultanee                                                   |
+| `PDF2TEX_LLM_MAX_RETRIES`                | `4`        | Retry su errori transienti (429/5xx/timeout)                                  |
+| `PDF2TEX_LLM_REQUEST_TIMEOUT`            | `180`      | Timeout in secondi per chiamata LLM                                           |
+| `PDF2TEX_WRITER_EXPAND_THRESHOLD`        | `600`      | Soglia caratteri per espansione sezioni sottili                               |
+| `PDF2TEX_WRITER_USE_KNOWLEDGE`           | `false`    | Il writer integra con conoscenza interna LLM                                  |
+| `PDF2TEX_COHERENCE_ENABLED`              | `true`     | Controllo coerenza tra capitoli                                               |
+| `PDF2TEX_CITATIONS_ENABLED`              | `true`     | Audit citazioni                                                               |
+| `PDF2TEX_OVERVIEW_ENABLED`               | `true`     | Pagina panoramica capitoli                                                    |
+| `PDF2TEX_JUDGE_ENABLED`                  | `true`     | Judge strutturale post-compilazione                                           |
+| `PDF2TEX_JUDGE_MAX_ITERATIONS`           | `1`        | Massimi round di revisione strutturale                                        |
+| `PDF2TEX_JUDGE_VISION`                   | `false`    | Judge visivo (richiede modello multimodale)                                   |
+| `PDF2TEX_JUDGE_VISION_MAX_PAGES`         | `12`       | Max pagine inviate al judge visivo                                            |
+| `PDF2TEX_MAX_FIGURES_PER_SECTION`        | `4`        | Cap massimo di figure per sezione                                             |
+| `PDF2TEX_FIGURE_WIDTH_RATIO`             | `0.62`     | Larghezza `\includegraphics` come frazione di `\linewidth`                    |
+| `PDF2TEX_RESEARCH_MAX_QUERIES`           | `5`        | Max query di ricerca web per topic                                            |
+| `PDF2TEX_RESEARCH_FETCH_PAGES`           | `true`     | Scarica il contenuto completo delle pagine (non solo snippet)                 |
+| `PDF2TEX_RESEARCH_PAGE_MAX_CHARS`        | `8000`     | Caratteri massimi per pagina fetchata                                         |
+| `PDF2TEX_RESEARCH_MAX_FETCH_CONCURRENCY` | `4`        | Max download simultanei di pagine                                             |
 
 > **Tutte le variabili (59)** sono elencate e commentate in [`backend/.env.example`](backend/.env.example).
 
@@ -394,17 +394,17 @@ backend/tests/
 
 ### Test E2E del grafo (9 test, tutti mocked)
 
-| Test | Scenario |
-|------|----------|
-| `test_full_graph_diamond_completes` | Grafo completo, tutti i nodi, judge approva |
-| `test_full_graph_compile_failure_then_judge_approves` | Compilazione fallisce → retry → successo |
-| `test_full_graph_single_source_no_overview` | Singolo documento → overview non attivata |
-| `test_full_graph_user_sources_merged_and_audited` | Fonti utente → merge pool → audit citazioni |
-| `test_full_graph_judge_disapproves_then_approves_on_revision` | Judge disapprova → revisione → riapprova |
-| `test_full_graph_judge_max_iterations_exhausted` | Judge disapprova 2× → limite iterazioni → END |
-| `test_full_graph_judge_revision_fails_rollback_to_good` | Revisione non compila → rollback |
-| `test_full_graph_coherence_and_citations_disabled` | Coherence + citations off → nodi restituiscono `{}` |
-| `test_full_graph_judge_disabled_terminates_after_review` | Judge off → termina dopo review |
+| Test                                                          | Scenario                                            |
+| ------------------------------------------------------------- | --------------------------------------------------- |
+| `test_full_graph_diamond_completes`                           | Grafo completo, tutti i nodi, judge approva         |
+| `test_full_graph_compile_failure_then_judge_approves`         | Compilazione fallisce → retry → successo            |
+| `test_full_graph_single_source_no_overview`                   | Singolo documento → overview non attivata           |
+| `test_full_graph_user_sources_merged_and_audited`             | Fonti utente → merge pool → audit citazioni         |
+| `test_full_graph_judge_disapproves_then_approves_on_revision` | Judge disapprova → revisione → riapprova            |
+| `test_full_graph_judge_max_iterations_exhausted`              | Judge disapprova 2× → limite iterazioni → END       |
+| `test_full_graph_judge_revision_fails_rollback_to_good`       | Revisione non compila → rollback                    |
+| `test_full_graph_coherence_and_citations_disabled`            | Coherence + citations off → nodi restituiscono `{}` |
+| `test_full_graph_judge_disabled_terminates_after_review`      | Judge off → termina dopo review                     |
 
 ### Test Sandbox (11 test — `@pytest.mark.sandbox`)
 
@@ -412,13 +412,13 @@ I test sandbox verificano che tutti i motori di estrazione, OCR, matematica,
 web search e LLM funzionino correttamente con asset reali. Generano automaticamente
 un **report Markdown** (`report-sandbox.md`) con output, warning ed errori.
 
-| Categoria | Test | Engine/Tool |
-|-----------|------|-------------|
-| 🖼️ **OCR** | `ocr_tesseract`, `ocr_rapidocr` | Tesseract, RapidOCR |
-| 🧮 **Math** | `math_pix2tex` | pix2tex |
-| 📐 **Structure** | `structure_docling` | Docling |
-| 🌐 **Web** | `web_wikipedia`, `web_tavily`, `web_perplexity`, `web_agent`, `web_page_fetch` | Wikipedia, Tavily, Perplexity, Web Agent |
-| 🤖 **LLM** | `llm_fake`, `llm_real` | Fake (offline), Real (configurabile) |
+| Categoria        | Test                                                                           | Engine/Tool                              |
+| ---------------- | ------------------------------------------------------------------------------ | ---------------------------------------- |
+| 🖼️ **OCR**       | `ocr_tesseract`, `ocr_rapidocr`                                                | Tesseract, RapidOCR                      |
+| 🧮 **Math**      | `math_pix2tex`                                                                 | pix2tex                                  |
+| 📐 **Structure** | `structure_docling`                                                            | Docling                                  |
+| 🌐 **Web**       | `web_wikipedia`, `web_tavily`, `web_perplexity`, `web_agent`, `web_page_fetch` | Wikipedia, Tavily, Perplexity, Web Agent |
+| 🤖 **LLM**       | `llm_fake`, `llm_real`                                                         | Fake (offline), Real (configurabile)     |
 
 ```bash
 # Solo test locali (no rete, no API key):

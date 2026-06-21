@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import uuid
 from pathlib import Path
 from typing import Any, cast
 
@@ -171,7 +172,13 @@ async def research_node(state: GraphState) -> dict[str, Any]:
     results into ``SourceAnalysis`` dicts — the same format the PDF analyzer
     produces, so the rest of the pipeline is unchanged.
     """
-    topic = state.get("user_prompt", "") or state.get("title", "Documento")
+    # Use the user_prompt (the user's topic description) as the search query;
+    # fall back to the project name, never a generic placeholder.
+    topic = (
+        state.get("user_prompt", "").strip()
+        or (state.get("metadata") or {}).get("title", "").strip()
+        or "research topic"
+    )
     if not topic.strip():
         logger.warning("Research mode enabled but no topic provided")
         return {"web_analyses": []}
@@ -970,7 +977,10 @@ async def review_node(state: GraphState) -> dict[str, Any]:
                 },
             )
 
-    work_dir = Path(state.get("work_dir", "storage/output/_tmp"))  # type: ignore[arg-type]
+    work_dir = Path(
+        state.get("work_dir")  # type: ignore[arg-type]
+        or f"storage/output/_tmp_{uuid.uuid4().hex[:8]}"
+    )
     figures_src = state.get("figures_dir")
     figures_path = Path(figures_src) if figures_src else None
 
@@ -1253,6 +1263,7 @@ async def run_pipeline(
     web_tool_configs: list[dict[str, Any]] | None = None,
     user_figure_placements: dict[str, list[tuple[str, str]]] | None = None,
     role_configs: dict[str, dict[str, Any]] | None = None,
+    web_analyses: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run the full pipeline and return the final state."""
     from app.core.config import settings as _settings
@@ -1284,6 +1295,11 @@ async def run_pipeline(
         "web_tool_configs": web_tool_configs or [],
         "user_figure_placements": user_figure_placements or {},
     }
+    # ── Inject pre-computed web analyses (when research ran in parallel ──
+    # with extraction) so merge_analyses picks them up immediately.
+    if web_analyses is not None:
+        initial["web_analyses"] = [dict(a) for a in web_analyses]
+
     # The produced keys (analyses/plan/sections/...) are filled in by the nodes;
     # the initial state only carries the inputs, hence the cast.
     final = await app.ainvoke(cast(GraphState, initial))

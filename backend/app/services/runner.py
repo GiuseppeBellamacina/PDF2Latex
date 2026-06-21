@@ -161,6 +161,21 @@ async def run_generation(
 
         llm_config = build_llm_config(provider, model)
 
+        # ── Thread fallback provider into main LLM config ──────────────────
+        if provider.fallback_provider_id:
+            fallback_prov = await session.get(
+                ProviderConfig, provider.fallback_provider_id
+            )
+            if fallback_prov and fallback_prov.is_active:
+                llm_config["fallback_llm_config"] = build_llm_config(
+                    fallback_prov, None
+                )
+                logger.info(
+                    "Provider fallback configurato: %s → %s",
+                    provider.name,
+                    fallback_prov.name,
+                )
+
         # ── Build per-role LLM configs from role_providers ─────────────────
         role_configs: dict[str, dict[str, Any]] = {}
         if role_providers:
@@ -171,7 +186,17 @@ async def run_generation(
                 rp_provider = await session.get(ProviderConfig, rp_id)
                 if rp_provider is None:
                     continue
-                role_configs[role] = build_llm_config(rp_provider, rp.get("model"))
+                rp_config = build_llm_config(rp_provider, rp.get("model"))
+                # Thread fallback for per-role providers too.
+                if rp_provider.fallback_provider_id:
+                    rp_fallback = await session.get(
+                        ProviderConfig, rp_provider.fallback_provider_id
+                    )
+                    if rp_fallback and rp_fallback.is_active:
+                        rp_config["fallback_llm_config"] = build_llm_config(
+                            rp_fallback, None
+                        )
+                role_configs[role] = rp_config
             if role_configs:
                 logger.info("Per-role providers: %s", list(role_configs.keys()))
 
@@ -220,10 +245,107 @@ async def run_generation(
             documents: list[dict[str, Any]] = []
             loop = asyncio.get_running_loop()
 
-            if not ordered_sources and not project.research_mode:
+            research_active = bool(project.research_mode) or bool(project.research_only)
+            if not ordered_sources and not research_active:
                 raise RuntimeError("Nessun documento né ricerca configurata")
 
-            if ordered_sources:
+            # ── Build web_tool_configs for research mode ────────────────────
+            # Must be constructed BEFORE the research task is created so the
+            # search adapters (Wikipedia, Arxiv, user tools) are available.
+            web_tool_configs: list[dict[str, Any]] = []
+            if research_active:
+                # ── Web Agent (orchestrator) ────────────────────────────
+                web_tool_configs.append(
+                    {
+                        "tool_type": "web_agent",
+                        "api_key": "",
+                        "base_url": "",
+                        "params": {
+                            "max_iterations": int(project.web_agent_max_iterations),
+                        },
+                        "max_queries": project.research_max_queries,
+                    }
+                )
+                # ── Wikipedia + Arxiv (always-available search backends) ────────
+                web_tool_configs.append(
+                    {
+                        "tool_type": "wikipedia",
+                        "api_key": "",
+                        "base_url": "",
+                        "params": {},
+                    }
+                )
+                web_tool_configs.append(
+                    {"tool_type": "arxiv", "api_key": "", "base_url": "", "params": {}}
+                )
+                # ── User-configured tools (Tavily / Perplexity) ──────────────
+                if project.web_tool_ids:
+                    for tid in project.web_tool_ids:
+                        web_tool = await session.get(WebToolConfig, tid)
+                        if not web_tool or not web_tool.is_active:
+                            continue
+                        if web_tool.tool_type in ("wikipedia", "web_agent", "arxiv"):
+                            continue
+                        web_tool_configs.append(
+                            {
+                                "tool_type": web_tool.tool_type,
+                                "api_key": decrypt_api_key(web_tool.api_key_encrypted)
+                                if web_tool.api_key_encrypted
+                                else "",
+                                "base_url": web_tool.base_url or "",
+                                "params": web_tool.params or {},
+                            }
+                        )
+                logger.info("Research mode: %d tools attivi", len(web_tool_configs))
+
+            # ── Kick off web research in parallel with PDF extraction ─────
+            # Research has NO dependency on extraction results, so it can
+            # start immediately while extraction runs concurrently.
+            research_task: asyncio.Task | None = None
+            web_analyses: list[dict[str, Any]] | None = None
+            raw_results: list[dict[str, str]] | None = None
+            if research_active:
+                from app.agents.researcher import research_topic
+
+                topic = (project.user_prompt or "").strip() or project.name.strip()
+                logger.info(
+                    "Avvio ricerca web in parallelo all'estrazione: '%s'",
+                    topic[:80],
+                )
+                await manager.emit(
+                    project_id,
+                    {
+                        "stage": "researching",
+                        "node": "research",
+                        "message": f"Ricerca web: '{topic[:100]}'",
+                        "progress": 1,
+                        "detail": "in parallelo all'estrazione PDF",
+                    },
+                )
+                research_task = asyncio.create_task(
+                    research_topic(
+                        topic=topic,
+                        language=language,
+                        llm_config=role_configs.get("researcher", llm_config),
+                        web_tool_configs=web_tool_configs,
+                    )
+                )
+
+            # When research_only is True, skip PDF extraction entirely.
+            skip_extraction = bool(project.research_only)
+            if skip_extraction and ordered_sources:
+                await manager.emit(
+                    project_id,
+                    {
+                        "stage": "extracting",
+                        "node": "extract",
+                        "message": "Fonti ignorate (modalità research-only)",
+                        "progress": 2,
+                        "level": "info",
+                        "detail": f"{n_src} sorgenti saltate — solo ricerca web",
+                    },
+                )
+            if ordered_sources and not skip_extraction:
                 await manager.emit(
                     project_id,
                     {
@@ -417,7 +539,43 @@ async def run_generation(
 
                 await session.commit()
 
-            if not documents and not project.research_mode:
+            # ── Await the research task (it ran in parallel with extraction) ──
+            if research_task is not None:
+                await manager.emit(
+                    project_id,
+                    {
+                        "stage": "extracting",
+                        "node": "extract",
+                        "message": "Attendo completamento ricerca web…",
+                        "progress": 4,
+                    },
+                )
+                try:
+                    web_analyses, raw_results = await research_task
+                    logger.info(
+                        "Ricerca web completata: %d analisi, %d raw results",
+                        len(web_analyses),
+                        len(raw_results),
+                    )
+                    if raw_results:
+                        await manager.emit(
+                            project_id,
+                            {
+                                "stage": "researching",
+                                "node": "research",
+                                "action": "research_results",
+                                "message": f"Trovate {len(raw_results)} fonti web",
+                                "progress": 6,
+                                "level": "success",
+                                "research_results": raw_results,
+                            },
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Ricerca web fallita: %s", exc)
+                    web_analyses = []
+                    raw_results = []
+
+            if not documents and not research_active:
                 raise RuntimeError("Nessun documento estratto correttamente")
 
             # ── LLM-based figure re-scoring (vlm pipeline mode) ────────────
@@ -462,65 +620,16 @@ async def run_generation(
                 await session.commit()
                 logger.info("Progetto %s: LLM figure scoring completato", project_id)
 
-            # ── Build web_tool_configs for research mode ────────────────────
-            # Web Agent (orchestrator) and Wikipedia (search backend) are
-            # always present when research mode is enabled.
-            # Additional tools (Tavily, Perplexity) are loaded from the
-            # project's web_tool_ids.
-            web_tool_configs: list[dict[str, Any]] = []
-            if project.research_mode:
-                # ── Web Agent (orchestrator) ────────────────────────────
-                web_tool_configs.append(
-                    {
-                        "tool_type": "web_agent",
-                        "api_key": "",
-                        "base_url": "",
-                        "params": {
-                            "max_iterations": int(project.web_agent_max_iterations),
-                        },
-                        "max_queries": project.research_max_queries,
-                    }
-                )
-                # ── Wikipedia + Arxiv (always-available search backends) ────────
-                web_tool_configs.append(
-                    {
-                        "tool_type": "wikipedia",
-                        "api_key": "",
-                        "base_url": "",
-                        "params": {},
-                    }
-                )
-                web_tool_configs.append(
-                    {
-                        "tool_type": "arxiv",
-                        "api_key": "",
-                        "base_url": "",
-                        "params": {},
-                    }
-                )
-                # ── User-configured tools (Tavily / Perplexity) ──────────────
-                if project.web_tool_ids:
-                    for tid in project.web_tool_ids:
-                        web_tool = await session.get(WebToolConfig, tid)
-                        if not web_tool or not web_tool.is_active:
-                            continue
-                        # Skip core tool IDs (seeded automatically)
-                        if web_tool.tool_type in ("wikipedia", "web_agent", "arxiv"):
-                            continue
-                        web_tool_configs.append(
-                            {
-                                "tool_type": web_tool.tool_type,
-                                "api_key": decrypt_api_key(web_tool.api_key_encrypted)
-                                if web_tool.api_key_encrypted
-                                else "",
-                                "base_url": web_tool.base_url or "",
-                                "params": web_tool.params or {},
-                            }
-                        )
-                        logger.info("Research mode: tool=%s", web_tool.tool_type)
-                logger.info("Research mode: %d tools active", len(web_tool_configs))
+            # ── Pipeline setup: pass pre-computed research results ────
+            # When research already ran in parallel, pass pre-computed results
+            # so research_node is a no-op.  Strip web_tool_configs — not needed
+            # since the search already completed.
+            _web_tool_configs: list[dict[str, Any]] | None = web_tool_configs
+            _research_mode = bool(project.research_mode) or bool(project.research_only)
+            if web_analyses is not None:
+                _research_mode = False  # research already done
+                _web_tool_configs = None
 
-            # ── Pipeline ────────────────────────────────────────────────────
             final = await run_pipeline(
                 documents=documents,
                 user_prompt=project.user_prompt or "",
@@ -537,10 +646,11 @@ async def run_generation(
                 user_sources=list(project.user_sources)
                 if project.user_sources
                 else None,
-                research_mode=bool(project.research_mode),
-                web_tool_configs=web_tool_configs,
+                research_mode=_research_mode,
+                web_tool_configs=_web_tool_configs,
                 user_figure_placements=user_figure_placements,
                 role_configs=role_configs or None,
+                web_analyses=web_analyses,
             )
 
             # ---- Persist plan/sections ----
@@ -631,6 +741,7 @@ def build_llm_config(provider: ProviderConfig, model: str | None) -> dict[str, A
         "max_tokens": params.get("max_tokens"),
         "top_p": params.get("top_p"),
         "extra_params": params.get("extra_params", {}),
+        "rpm_limit": provider.rpm_limit,  # per-provider RPM override
     }
 
 

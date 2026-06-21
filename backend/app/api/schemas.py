@@ -16,6 +16,8 @@ class ProviderCreate(BaseModel):
     base_url: str | None = None
     default_model: str | None = None
     params: dict[str, Any] | None = None
+    rpm_limit: int | None = None
+    fallback_provider_id: int | None = None
     is_active: bool = True
 
 
@@ -26,6 +28,8 @@ class ProviderUpdate(BaseModel):
     base_url: str | None = None
     default_model: str | None = None
     params: dict[str, Any] | None = None
+    rpm_limit: int | None = None
+    fallback_provider_id: int | None = None
     is_active: bool | None = None
 
 
@@ -38,6 +42,8 @@ class ProviderOut(BaseModel):
     base_url: str | None
     default_model: str | None
     params: dict[str, Any] | None
+    rpm_limit: int | None = None
+    fallback_provider_id: int | None = None
     is_active: bool
     has_api_key: bool
 
@@ -180,6 +186,8 @@ class ProjectUpdate(BaseModel):
     writer_use_knowledge: bool | None = None
     # Research-based generation mode (no PDFs needed).
     research_mode: bool | None = None
+    # When True, ONLY use web research — skip PDF extraction entirely.
+    research_only: bool | None = None
     web_tool_ids: list[int] | None = None
     research_max_queries: int | None = None
     web_agent_max_iterations: int | None = None
@@ -219,6 +227,7 @@ class ProjectOut(BaseModel):
     latex_template: str | None = None
     writer_use_knowledge: bool | None = None
     research_mode: bool | None = None
+    research_only: bool | None = None
     web_tool_ids: list[int] | None = None
     research_max_queries: int | None = None
     web_agent_max_iterations: int | None = None

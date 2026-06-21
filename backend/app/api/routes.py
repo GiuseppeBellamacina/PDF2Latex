@@ -171,6 +171,8 @@ def _provider_out(p: ProviderConfig) -> ProviderOut:
         base_url=p.base_url,
         default_model=p.default_model,
         params=p.params,
+        rpm_limit=p.rpm_limit,
+        fallback_provider_id=p.fallback_provider_id,
         is_active=p.is_active,
         has_api_key=bool(p.api_key_encrypted),
     )
@@ -190,6 +192,8 @@ async def create_provider(payload: ProviderCreate, db: AsyncSession = Depends(ge
         base_url=payload.base_url,
         default_model=payload.default_model,
         params=payload.params,
+        rpm_limit=payload.rpm_limit,
+        fallback_provider_id=payload.fallback_provider_id,
         is_active=payload.is_active,
         api_key_encrypted=encrypt_api_key(payload.api_key) if payload.api_key else None,
     )
@@ -383,6 +387,7 @@ async def create_project(
     writer_use_knowledge: bool = Form(False),
     user_sources: str = Form(""),
     research_mode: bool = Form(False),
+    research_only: bool = Form(False),
     web_tool_ids: str = Form(""),
     research_max_queries: int = Form(0),
     web_agent_max_iterations: int = Form(3),
@@ -394,7 +399,8 @@ async def create_project(
 ):
     has_files = any((f.filename or "").strip() for f in files)
     url_list = [u.strip() for u in urls.split("\n") if u.strip()]
-    if not has_files and not url_list and not research_mode:
+    has_research = bool(research_mode) or bool(research_only)
+    if not has_files and not url_list and not has_research:
         raise HTTPException(400, "Nessuna fonte caricata e ricerca web non attiva")
 
     # Parse web_tool_ids from comma-separated string (e.g. "1,2,3").
@@ -436,7 +442,8 @@ async def create_project(
         user_sources=_parse_user_sources(user_sources)
         if user_sources.strip()
         else None,
-        research_mode=bool(research_mode),
+        research_mode=bool(research_mode) or bool(research_only),
+        research_only=bool(research_only),
         web_tool_ids=_parsed_tool_ids if _parsed_tool_ids else None,
         research_max_queries=research_max_queries if research_max_queries > 0 else None,
         web_agent_max_iterations=web_agent_max_iterations,
@@ -604,6 +611,11 @@ async def update_project(
 
     for field, value in data.items():
         setattr(project, field, value)
+
+    # When research_only is toggled on, auto-enable research_mode too
+    # (mirrors create_project behaviour).
+    if project.research_only and not project.research_mode:
+        project.research_mode = True
 
     # Validate web_tool_ids only when research_mode or web_tool_ids were
     # explicitly changed in this request (not on unrelated PATCH calls).
