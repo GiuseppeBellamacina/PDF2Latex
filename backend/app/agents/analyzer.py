@@ -35,6 +35,40 @@ def _dedup_keep_order(items: list[str]) -> list[str]:
     return out
 
 
+def _bigrams(s: str) -> set[str]:
+    """Return the set of consecutive 2-character substrings."""
+    return {s[i : i + 2] for i in range(len(s) - 1)}
+
+
+def _fuzzy_dedup_figures(items: list[str], threshold: float = 0.75) -> list[str]:
+    """Remove near-duplicate figure descriptions using bigram Jaccard.
+
+    Catches LLM hallucination loops where the same figure is described with
+    minor typos, truncations, or character omissions (e.g. "Esempio di rete
+    con backpropagation" vs "Esempio di rete con backprop").
+    """
+    result: list[str] = []
+    bigrams_cache: list[set[str]] = []
+    for item in items:
+        norm = item.strip().lower()
+        bg = _bigrams(norm)
+        if not bg:
+            if item.strip():
+                result.append(item.strip())
+            continue
+        is_dup = False
+        for existing_bg in bigrams_cache:
+            intersection = len(bg & existing_bg)
+            union = len(bg | existing_bg)
+            if union and intersection / union >= threshold:
+                is_dup = True
+                break
+        if not is_dup:
+            result.append(item.strip())
+            bigrams_cache.append(bg)
+    return result
+
+
 def _dedup_references(refs: list[dict[str, str]]) -> list[dict[str, str]]:
     """De-duplicate parsed references by normalized title (then author+year)."""
     import re
@@ -109,11 +143,46 @@ async def analyze_document(
         ]
     )
 
-    # Reduce: merge structured fields, dedup.
-    topics = _dedup_keep_order([t for p in partials for t in p.topics])
-    formulas = _dedup_keep_order([f for p in partials for f in p.formulas])
-    figures = _dedup_keep_order([f for p in partials for f in p.figures])
-    keywords = _dedup_keep_order([k for p in partials for k in p.keywords])
+    # Reduce: merge structured fields, dedup, enforce caps to stop LLM loops.
+    _MAX_TOPICS = 20
+    _MAX_FORMULAS = 40
+    _MAX_FIGURES = 30
+    _MAX_KEYWORDS = 15
+
+    raw_topics = _dedup_keep_order([t for p in partials for t in p.topics])
+    raw_formulas = _dedup_keep_order([f for p in partials for f in p.formulas])
+    raw_figures = _dedup_keep_order([f for p in partials for f in p.figures])
+    _before_fuzzy = len(raw_figures)
+    raw_figures = _fuzzy_dedup_figures(raw_figures)
+    fuzzy_dropped = _before_fuzzy - len(raw_figures)
+    if fuzzy_dropped:
+        logger.debug(
+            "%s: fuzzy dedup ha rimosso %d figure near-duplicate",
+            filename,
+            fuzzy_dropped,
+        )
+    raw_keywords = _dedup_keep_order([k for p in partials for k in p.keywords])
+
+    # Warn when the LLM produces excessive lists (hallucination / loop).
+    for name, raw, cap in [
+        ("topics", raw_topics, _MAX_TOPICS),
+        ("formulas", raw_formulas, _MAX_FORMULAS),
+        ("figures", raw_figures, _MAX_FIGURES),
+        ("keywords", raw_keywords, _MAX_KEYWORDS),
+    ]:
+        if len(raw) > cap:
+            logger.warning(
+                "%s: LLM ha prodotto %d %s (cap=%d) — troncamento",
+                filename,
+                len(raw),
+                name,
+                cap,
+            )
+
+    topics = raw_topics[:_MAX_TOPICS]
+    formulas = raw_formulas[:_MAX_FORMULAS]
+    figures = raw_figures[:_MAX_FIGURES]
+    keywords = raw_keywords[:_MAX_KEYWORDS]
     references = _dedup_references(
         [r.model_dump() for p in partials for r in p.references]
     )

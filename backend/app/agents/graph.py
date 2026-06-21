@@ -171,7 +171,12 @@ async def research_node(state: GraphState) -> dict[str, Any]:
     mode, this node searches the web, fetches relevant pages, and synthesizes
     results into ``SourceAnalysis`` dicts — the same format the PDF analyzer
     produces, so the rest of the pipeline is unchanged.
+
+    When ``research_mode`` is disabled this node is a fast no-op, returning
+    an empty list immediately so the merge barrier never stalls.
     """
+    if not state.get("research_mode"):
+        return {"web_analyses": []}
     # Use the user_prompt (the user's topic description) as the search query;
     # fall back to the project name, never a generic placeholder.
     topic = (
@@ -288,8 +293,9 @@ async def plan_node(state: GraphState) -> dict[str, Any]:
         },
     )
 
+    analyses = state.get("analyses") or state.get("doc_analyses", [])
     title, plan = await plan_document(
-        analyses=[dict(a) for a in state["analyses"]],
+        analyses=[dict(a) for a in analyses],
         user_prompt=state.get("user_prompt", ""),
         language=state.get("language", "italian"),
         llm_config=_get_config(state, "planner"),
@@ -1208,16 +1214,16 @@ def build_graph():
     graph.add_node("review", review_node)
     graph.add_node("judge", judge_node)
 
-    # START → analyze (if PDFs) and/or research (if research_mode).
+    # START → analyze (always; no-op when there are no documents)
+    #       → research (only when research_mode is on).
     # Both write to separate state keys; merge_analyses combines them.
     def _route_start(state: GraphState) -> list[str]:
-        routes: list[str] = []
-        if state.get("documents"):
-            routes.append("analyze")
+        routes: list[str] = ["analyze"]  # always run (no-op if no docs)
         if state.get("research_mode"):
             routes.append("research")
-        return routes if routes else ["analyze"]  # default for safety
+        return routes
 
+    # Fan-out from START: analyze always runs; research only when research_mode is on.
     graph.add_conditional_edges(
         START,
         _route_start,
@@ -1226,7 +1232,20 @@ def build_graph():
             "research": "research",
         },
     )
-    graph.add_edge("analyze", "merge_analyses")
+
+    # When research_mode is off, analyze goes straight to plan (nothing to merge).
+    # When research_mode is on, analyze → merge_analyses to wait for research.
+    def _after_analyze(state: GraphState) -> str:
+        return "merge_analyses" if state.get("research_mode") else "plan"
+
+    graph.add_conditional_edges(
+        "analyze",
+        _after_analyze,
+        {
+            "merge_analyses": "merge_analyses",
+            "plan": "plan",
+        },
+    )
     graph.add_edge("research", "merge_analyses")
     graph.add_edge("merge_analyses", "plan")
     # Diamond fan-out: write → overview, coherence, citations (parallel)
@@ -1253,15 +1272,15 @@ async def run_pipeline(
     few_shot: str,
     work_dir: Path,
     figures_dir: Path | None,
-    metadata: dict[str, Any] | None = None,
-    structure_hint: str = "",
-    progress=None,
-    judge_vision: bool | None = None,
-    writer_use_knowledge: bool | None = None,
-    user_sources: list[dict[str, str]] | None = None,
-    research_mode: bool = False,
-    web_tool_configs: list[dict[str, Any]] | None = None,
-    user_figure_placements: dict[str, list[tuple[str, str]]] | None = None,
+    metadata: dict[str, Any] | None,
+    structure_hint: str,
+    progress: Any,
+    judge_vision: bool,
+    writer_use_knowledge: bool,
+    user_sources: list[dict[str, str]] | None,
+    research_mode: bool,
+    web_tool_configs: list[dict[str, Any]] | None,
+    user_figure_placements: dict[str, list[tuple[str, str]]] | None,
     role_configs: dict[str, dict[str, Any]] | None = None,
     web_analyses: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -1295,7 +1314,7 @@ async def run_pipeline(
         "web_tool_configs": web_tool_configs or [],
         "user_figure_placements": user_figure_placements or {},
     }
-    # ── Inject pre-computed web analyses (when research ran in parallel ──
+    # ── Inject pre-computed web analyses (when research ran in parallel
     # with extraction) so merge_analyses picks them up immediately.
     if web_analyses is not None:
         initial["web_analyses"] = [dict(a) for a in web_analyses]

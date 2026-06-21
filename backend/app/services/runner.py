@@ -352,7 +352,7 @@ async def run_generation(
                     )
 
                 logger.info(
-                    "Progetto %s: estrazione di %d sorgenti (backend=%s, ocr=%s)",
+                    "Progetto %s: estrazione di %d sorgenti",
                     project_id,
                     n_src,
                 )

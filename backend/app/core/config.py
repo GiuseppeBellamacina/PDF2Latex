@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     latex_template: str = "default"  # default | paper | thesis-oneside | thesis-twoside
 
     # PDF extraction
+    ocr_lang: str = "ita+eng"
+    tesseract_cmd: str = ""  # explicit tesseract path (empty = auto-detect)
     render_dpi: int = 130
     # Docling renders every page through ML layout models; on large PDFs this
     # exhausts memory (std::bad_alloc). The hybrid backend therefore runs

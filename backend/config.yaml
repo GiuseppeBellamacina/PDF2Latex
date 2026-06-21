@@ -92,7 +92,7 @@ reviewer_temperature: 0.0
 judge_temperature: 0.0
 
 # Character budgets per chunk / per section
-analyzer_chunk_chars: 16000 # map-reduce chunk size for long docs
+analyzer_chunk_chars: 32000 # map-reduce chunk size for long docs (bigger = fewer chunks = less LLM hallucination)
 analyzer_max_chunks: 12 # safety cap on chunks per document
 writer_source_chars: 14000 # relevance-selected source budget per section
 writer_max_source_chars: 50000 # cap when many sources, 0 = no cap
